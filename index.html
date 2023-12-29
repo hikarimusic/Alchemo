@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Alchemo</title>
+    <link rel="stylesheet" type="text/css" href="styles.css">
+</head>
+<body>
+    <div id="viewer-container">
+        <div id="viewer"></div>
+    </div>
+    <div id="controls">
+        <!-- Group for local PDB file loading -->
+        <div class="control-group">
+            <input type="file" id="fileInput" accept=".pdb">
+            <button id="loadFileButton">Load Local PDB File</button>
+        </div>
+
+        <!-- Group for PDB ID input -->
+        <div class="control-group">
+            <label for="pdbIdInput">Enter PDB ID:</label>
+            <input type="text" id="pdbIdInput" placeholder="e.g., 1ubq">
+            <button id="loadPdbIdButton">Load PDB ID</button>
+        </div>
+
+        <!-- Group for PubChem ID input -->
+        <div class="control-group">
+            <label for="pubchemIdInput">Enter PubChem ID:</label>
+            <input type="text" id="pubchemIdInput" placeholder="e.g., 2244">
+            <button id="loadPubchemIdButton">Load PubChem ID</button>
+        </div>
+
+        <!-- Group for style selection and additional controls -->
+        <div class="control-group">
+            <label for="styleSelect">Select Style:</label>
+            <select id="styleSelect">
+                <option value="cartoon">Cartoon</option>
+                <option value="stick">Stick</option>
+                <option value="sphere">Sphere</option>
+            </select>
+            <button id="clearViewButton">Clear View</button>
+        </div>
+    </div>
+
+    <script type="text/javascript" src="https://3dmol.csb.pitt.edu/build/3Dmol.js"></script>
+    <script type="text/javascript" src="script.js"></script>
+</body>
+</html>

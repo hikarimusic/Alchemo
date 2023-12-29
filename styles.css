@@ -1,0 +1,125 @@
+/* styles.css updated for a professional and coordinated UI design */
+
+/* Importing Google Fonts */
+@import url('https://fonts.googleapis.com/css2?family=Roboto:wght@400;700&display=swap');
+
+/* Resetting default margin and padding for the body element */
+body {
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: row; /* Arrange child elements horizontally */
+    height: 100vh; /* Use 100% of viewport height */
+    background: #121212; /* Dark background for the whole page */
+    font-family: 'Roboto', sans-serif; /* Modern font */
+}
+
+/* Container for the 3D viewer */
+#viewer-container {
+    flex: 4; /* Occupy 80% of the available width */
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+}
+
+/* Styling for the 3D viewer */
+#viewer {
+    width: 100%;
+    height: 100%; /* Occupy 100% of the parent container's height */
+    border: none;
+    box-shadow: 0 4px 8px 0 rgba(0, 0, 0, 0.2); /* Subtle shadow for depth */
+}
+
+/* Styling for the controls section */
+#controls {
+    flex: 1; /* Occupy 20% of the available width */
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-start; /* Align controls to the top */
+    align-items: center;
+    padding: 30px;
+    background: #1a1a1a; /* Consistent dark background for control area */
+}
+
+/* Frame styling for control groups */
+.control-group {
+    width: 100%;
+    padding: 10px;
+    margin-bottom: 20px;
+    border: 1px solid #333; /* Subtle border for control groups */
+    border-radius: 6px; /* Rounded corners for modern look */
+    background: none; /* No background color for control groups */
+}
+
+/* Uniform styling for all buttons, selects, and file inputs */
+button, select, input[type="file"] {
+    width: calc(100% - 20px); /* Account for padding */
+    padding: 12px; /* Uniform padding */
+    margin-top: 10px; /* Consistent top margin */
+    margin-bottom: 10px; /* Consistent bottom margin */
+    border-radius: 6px; /* Slightly rounded corners for a modern look */
+    font-size: 16px; /* Standard font size */
+    box-sizing: border-box; /* Include padding in the width calculation */
+    cursor: pointer;
+    transition: all 0.3s ease; /* Transition for background and border color */
+    border: 1px solid #333; /* Subtle border to match control groups */
+    background-color: #3A3A3A; /* Default gray background */
+    color: white; /* Text color */
+}
+
+/* Adjusting button color to match the provided image */
+button:hover {
+    background-color: #0078D7; /* Blue background on hover */
+    border-color: #0078D7; /* Blue border on hover */
+}
+
+/* Styling for file input to match buttons */
+input[type="file"] {
+    color: white;
+    background-color: #3A3A3A; /* Gray background to match buttons */
+    border: 1px solid #333; /* Subtle border to match control groups */
+}
+
+/* Custom styling for file input button */
+input[type="file"]::-webkit-file-upload-button {
+    visibility: hidden;
+}
+input[type="file"]::before {
+    content: 'Select PDB File';
+    display: inline-block;
+    background-color: #3A3A3A; /* Gray background to match buttons */
+    color: white;
+    width: calc(100% - 20px); /* Account for padding */
+    padding: 12px; /* Uniform padding */
+    border-radius: 2px; /* Slightly rounded corners for a modern look */
+    text-align: center;
+    outline: none;
+    white-space: nowrap;
+    -webkit-user-select: none;
+    cursor: pointer;
+    font-size: 16px;
+    border: 1px solid #333; /* Subtle border to match control groups */
+}
+input[type="file"]:hover::before {
+    background-color: #0078D7; /* Blue background on hover */
+    border-color: #0078D7; /* Blue border on hover */
+}
+
+/* Label styling for consistency */
+label {
+    color: #cfcfcf; /* Lighter text for better contrast */
+    margin-bottom: 5px; /* Spacing between label and control */
+    width: calc(100% - 20px); /* Align width with controls */
+    text-align: left;
+    display: block; /* Ensure labels are block-level to align properly */
+}
+
+/* Additional global styling for professional look */
+.control-group label:first-child {
+    margin-top: 0; /* Remove top margin for first label */
+}
+
+.control-group:last-child {
+    margin-bottom: 0; /* Remove bottom margin for last control group */
+}
