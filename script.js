@@ -1,12 +1,15 @@
 // Create a 3Dmol.js viewer with a black background
 var viewer = $3Dmol.createViewer("viewer", { width: "100%", height: "100%", backgroundColor: "black" });
 
+// Save th pdbData for simulation
+var pdbData = ""
+
 // Function to load a local file
 function loadLocalFile(file) {
     var reader = new FileReader();
 
     reader.onload = function(event) {
-        var pdbData = event.target.result;
+        pdbData = event.target.result;
         viewer.clear();
         viewer.addModel(pdbData, "pdb");
         applySelectedStyle('protein');
@@ -20,15 +23,26 @@ function loadLocalFile(file) {
 // Function to load a structure from PDB ID
 function loadFromPdbId(pdbId) {
     viewer.clear();
-    $3Dmol.download("pdb:" + pdbId, viewer, {}, function(m) {
-        if (m) {
+
+    var pdbUrl = `https://files.rcsb.org/download/${pdbId}.pdb`;
+    fetch(pdbUrl)
+        .then(response => {
+            if (!response.ok) {
+                throw new Error('Network response was not ok');
+            }
+            return response.text();
+        })
+        .then(data => {
+            pdbData = data;
+            viewer.addModel(pdbData, "pdb");
             applySelectedStyle('protein');
             viewer.zoomTo();
             viewer.render();
-        } else {
+        })
+        .catch(error => {
+            console.error('There has been a problem with your fetch operation:', error);
             alert("Error loading PDB ID.");
-        }
-    });
+        });
 }
 
 // Function to load a structure from PubChem ID
@@ -46,25 +60,59 @@ function loadFromPubchemId(pubchemId) {
 }
 
 // Function to apply the selected style
-// function applySelectedStyle() {
-//     var styleSelect = document.getElementById("styleSelect");
-//     var selectedStyle = styleSelect.options[styleSelect.selectedIndex].value;
-//     var styleOptions = { stick: {}, sphere: { scale: 0.3 }, cartoon: { color: 'spectrum' } };
-
-//     viewer.setStyle({}, styleOptions[selectedStyle] || {});
-// }
-
 function applySelectedStyle(moleculeType) {
     var styleSelect = document.getElementById("styleSelect");
     var selectedStyle = styleSelect.options[styleSelect.selectedIndex].value;
 
-    // Apply the selected style
     if (moleculeType === "protein" && selectedStyle === "cartoon") {
         viewer.setStyle({}, { cartoon: { color: 'spectrum' } });
+    } else if (moleculeType === "compound" && selectedStyle === "cartoon") {
+        viewer.setStyle({}, { stick: {} });
     } else {
-        // For other styles, you can define them here
         viewer.setStyle({}, { [selectedStyle]: {} });
     }
+}
+
+
+// Function to animate and stop the protein
+var proteinFrames = [];
+var currentFrameIndex = 0;
+var continueAnimation = true;
+
+function animateProtein() {
+    fetch('http://localhost:5000/animateProtein', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ pdbData: pdbData })
+    })
+    .then(response => response.json())
+    .then(data => {
+        proteinFrames = data.frames;
+        animateProteinFrames();
+    })
+    .catch(error => console.error('Error sending protein data to backend:', error));
+    continueAnimation = true;
+}
+
+function animateProteinFrames() {
+    if (continueAnimation && currentFrameIndex < proteinFrames.length) {
+        viewer.clear();
+        viewer.addModel(proteinFrames[currentFrameIndex], "pdb");
+        applySelectedStyle('protein');
+        viewer.render();
+
+        currentFrameIndex++;
+        setTimeout(animateProteinFrames, 100);
+    } else {
+        currentFrameIndex = 0;
+        animateProteinFrames();
+    }
+}
+
+function stopAnimation() {
+    continueAnimation = false;
 }
 
 // Event listeners
@@ -75,18 +123,6 @@ document.getElementById("loadFileButton").addEventListener("click", function() {
         loadLocalFile(file);
     }
 });
-
-// Event listener for the file input
-// document.getElementById("fileInput").addEventListener("change", function(event) {
-//     var fileInput = event.target;
-//     var selectedFile = fileInput.files[0];
-
-//     if (selectedFile) {
-//         loadLocalFile(selectedFile);
-//     }
-// });
-
-// Event listener for style changes
 
 document.getElementById("loadPdbIdButton").addEventListener("click", function() {
     var pdbId = document.getElementById("pdbIdInput").value;
@@ -106,7 +142,10 @@ document.getElementById("styleSelect").addEventListener("change", function() {
     viewer.render();
 });
 
-document.getElementById("clearViewButton").addEventListener("click", function() {
-    viewer.clear();
-    viewer.render();
+document.getElementById("animateProteinButton").addEventListener("click", function() {
+    animateProtein();
+});
+
+document.getElementById("stopAnimationButton").addEventListener("click", function() {
+    stopAnimation();
 });
