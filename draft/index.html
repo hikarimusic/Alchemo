@@ -11,6 +11,11 @@
     </div>
     <div id="controls">
         <!-- <div class="control-group">
+            <input type="file" id="fileInput" accept=".pdb">
+            <button id="loadFileButton">Load Local PDB File</button>
+        </div> -->
+
+        <div class="control-group">
             <label for="proteinInput">Enter Protein:</label>
             <textarea id="proteinInput" rows="4" cols="50" style="overflow-y: scroll;" placeholder="e.g., MLEICLKLVGCKSKKGLSSSSSCYLEEALQRPVASDFEPQGLSEAARWNSKENLLAGPSENDPNLFVALYDFVASGDNTLSITKGEKLRVLGYNHNGEWCEAQTKNGQGWVPSNYITPVNSLEKHSWYHGPVSRNAAEYLLSSGINGSFL"></textarea>
             <button id="loadProteinButton">Load Protein</button>
@@ -20,18 +25,9 @@
             <label for="moleculeInput">Enter Molecule:</label>
             <textarea id="moleculeInput" rows="4" cols="50" style="overflow-y: scroll;" placeholder="e.g., CC1=C(C=C(C=C1)NC(=O)C2=CC=C(C=C2)CN3CCN(CC3)C)NC4=NC=CC(=N4)C5=CN=CC=C5"></textarea>
             <button id="loadMoleculeButton">Load Molecule</button>
-        </div> -->
-
-        <div class="control-group">
-            <label for="sequenceInput">Enter Protein/Molecule:</label>
-            <textarea id="sequenceInput" rows="4" cols="50" style="overflow-y: scroll;" placeholder="e.g., CYFQNCPRG / CC(=O)NC1=CC=C(C=C1)O"></textarea>
-            <div class="button-group">
-                <button id="loadProteinButton">Load Protein</button>
-                <button id="loadMoleculeButton">Load Molecule</button>
-            </div>
         </div>
 
-        <!-- <div class="control-group">
+        <div class="control-group">
             <label for="pdbIdInput">Enter PDB ID:</label>
             <input type="text" id="pdbIdInput" placeholder="e.g., 3QRK">
             <button id="loadPdbIdButton">Load PDB ID</button>
@@ -41,20 +37,6 @@
             <label for="pubchemIdInput">Enter PubChem ID:</label>
             <input type="text" id="pubchemIdInput" placeholder="e.g., 5291">
             <button id="loadPubchemIdButton">Load PubChem ID</button>
-        </div> -->
-
-        <div class="control-group">
-            <label for="idInput">Enter PDB or PubChem ID:</label>
-            <input type="text" id="idInput" placeholder="e.g., 3QRK / 5291">
-            <div class="button-group">
-                <button id="loadPdbIdButton">Load PDB ID</button>
-                <button id="loadPubchemIdButton">Load PubChem ID</button>
-            </div>
-        </div>
-
-        <div class="control-group">
-            <input type="file" id="fileInput" accept=".pdb">
-            <button id="loadFileButton">Load Local PDB File</button>
         </div>
 
         <div class="control-group">
@@ -64,10 +46,8 @@
                 <option value="stick">Stick</option>
                 <option value="sphere">Sphere</option>
             </select>
-            <div class="button-group">
-                <button id="animateProteinButton">Simulate</button>
-                <button id="stopAnimationButton">Stop</button>
-            </div>
+            <button id="simulateButton">Simulate</button>
+            <button id="stopButton">Stop</button>
         </div>
         
     </div>

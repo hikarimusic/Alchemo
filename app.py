@@ -53,6 +53,23 @@ def generate_frames(base_structure, num_frames, displacement=0.1):
         
     return frames
 
+@app.route('/generateProteinStructure', methods=['POST'])
+def generate_protein_structure():
+    data = request.json
+    protein_sequence = data['sequence']
+    print("HELLO", protein_sequence)
+    # Code to generate PDB data from protein sequence
+    pdb_data = "generated PDB data for protein"
+    return jsonify(pdbData=pdb_data)
+
+@app.route('/generateMoleculeStructure', methods=['POST'])
+def generate_molecule_structure():
+    data = request.json
+    molecule_sequence = data['sequence']
+    # Code to generate PDB data from molecule sequence
+    pdb_data = "generated PDB data for molecule"
+    return jsonify(pdbData=pdb_data)
+
 @app.route('/animateProtein', methods=['POST'])
 def animate_protein():
     content = request.json

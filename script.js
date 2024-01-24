@@ -20,6 +20,52 @@ function loadLocalFile(file) {
     reader.readAsText(file);
 }
 
+// Function to load protein sequence
+function loadProteinSequence() {
+    // var proteinSequence = document.getElementById("proteinInput").value;
+    var proteinSequence = document.getElementById("sequenceInput").value;
+    fetch('http://localhost:5000/generateProteinStructure', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ sequence: proteinSequence })
+    })
+    .then(response => response.json())
+    .then(data => {
+        pdbData = data.pdbData;
+        viewer.clear();
+        viewer.addModel(pdbData, "pdb");
+        applySelectedStyle('protein');
+        viewer.zoomTo();
+        viewer.render();
+    })
+    .catch(error => console.error('Error:', error));
+}
+
+// Function to load molecule sequence
+function loadMoleculeSequence() {
+    // var moleculeSequence = document.getElementById("moleculeInput").value;
+    var moleculeSequence = document.getElementById("sequenceInput").value;
+    fetch('http://localhost:5000/generateMoleculeStructure', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ sequence: moleculeSequence })
+    })
+    .then(response => response.json())
+    .then(data => {
+        pdbData = data.pdbData;
+        viewer.clear();
+        viewer.addModel(pdbData, "pdb");
+        applySelectedStyle('compound');
+        viewer.zoomTo();
+        viewer.render();
+    })
+    .catch(error => console.error('Error:', error));
+}
+
 // Function to load a structure from PDB ID
 function loadFromPdbId(pdbId) {
     viewer.clear();
@@ -73,7 +119,6 @@ function applySelectedStyle(moleculeType) {
     }
 }
 
-
 // Function to animate and stop the protein
 var proteinFrames = [];
 var currentFrameIndex = 0;
@@ -116,6 +161,7 @@ function stopAnimation() {
 }
 
 // Event listeners
+
 document.getElementById("loadFileButton").addEventListener("click", function() {
     var fileInput = document.getElementById("fileInput");
     var file = fileInput.files[0];
@@ -124,13 +170,19 @@ document.getElementById("loadFileButton").addEventListener("click", function() {
     }
 });
 
+document.getElementById("loadProteinButton").addEventListener("click", loadProteinSequence);
+
+document.getElementById("loadMoleculeButton").addEventListener("click", loadMoleculeSequence);
+
 document.getElementById("loadPdbIdButton").addEventListener("click", function() {
-    var pdbId = document.getElementById("pdbIdInput").value;
+    // var pdbId = document.getElementById("pdbIdInput").value;
+    var pdbId = document.getElementById("idInput").value;
     loadFromPdbId(pdbId);
 });
 
 document.getElementById("loadPubchemIdButton").addEventListener("click", function() {
-    var pubchemId = document.getElementById("pubchemIdInput").value;
+    // var pubchemId = document.getElementById("pubchemIdInput").value;
+    var pubchemId = document.getElementById("idInput").value;
     loadFromPubchemId(pubchemId);
 });
 
