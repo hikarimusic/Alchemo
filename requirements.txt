@@ -1,5 +1,7 @@
 torch
 numpy
+pandas
+scipy
 seaborn
 matplotlib
 
