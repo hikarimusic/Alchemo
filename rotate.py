@@ -2,7 +2,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation as R
 import re
 
-def transform_points(points, point_a_index, plane_points_indices):
+def transform_points(points, point_a_index, plane_points_indices, side_chain_indices=[], side_remove_indices=[]):
     # Step 1: Rotate Points B, C, and D to the same plane (z=0)
     p_a, p_b, p_c, p_d = points[[point_a_index] + plane_points_indices]
     normal_vector = np.cross(p_c - p_b, p_d - p_b)
@@ -66,8 +66,27 @@ def transform_points(points, point_a_index, plane_points_indices):
     if p_d[1] > p_c[1]:  # Invert y and z coordinates if y-coordinate of D is greater than C
         inversion_matrix = np.array([[1, 0, 0], [0, -1, 0], [0, 0, -1]])
         rotated_points = np.dot(rotated_points, inversion_matrix)
-    # print("Inverse")
-    # print(rotated_points)
+    print("Inverse")
+    print(rotated_points)
+
+    # Step 7: Rotate Side Chain
+    if (len(side_chain_indices)==0):
+        return rotated_points
+    p_c, p_b, p_a = rotated_points[[1] + side_chain_indices]
+    axis = p_c - p_b
+    axis /= np.linalg.norm(axis)  # Normalize the axis
+    projection = p_b + np.dot(p_a - p_b, axis) * axis
+    # angle = np.arcsin((p_c[0]-p_b[0])/np.linalg.norm(p_a - projection)) + np.pi
+    normal = np.cross(p_a - p_b, p_c - p_b)
+    normal /= np.linalg.norm(normal)
+    angle = np.arccos(np.dot(normal, np.array([1., 0., 0.]))) + np.pi
+    if np.cross(p_a - p_b, p_c - p_b)[1] < 0:
+        angle = - angle
+    rotation_matrix_a = R.from_rotvec(angle * axis).as_matrix()
+    move_idx = [i for i in range(4, points.shape[0]-1) if i not in side_remove_indices]
+    rotated_points[move_idx] = np.dot(rotation_matrix_a, (rotated_points[move_idx] - projection).T).T + projection
+    print("rotate side")
+    print(rotated_points)
 
     return rotated_points
 
@@ -109,6 +128,10 @@ def print_formatted(array):
         formatted_row = ' '.join(f'{x:7.3f}' for x in row)
         print(formatted_row)
 
+
+res = ""
+
+
 name = ">A"
 data = """
 ATOM    268  N   ALA A  18       3.147   2.159 -20.048  1.00  0.00           N  
@@ -127,10 +150,11 @@ regex = r'ATOM\s+\d+\s+\w+\s+\w+\s+\w+\s+\d+\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?
 matches = re.findall(regex, data)
 points = np.array([[float(x), float(y), float(z)] for x, y, z in matches])
 np.set_printoptions(precision=3, suppress=True)
-transformed_points = transform_points(points, point_a_index=0, plane_points_indices=[1, 2, 3])
+transformed_points = transform_points(points, point_a_index=0, plane_points_indices=[1, 2, 3],  side_chain_indices=[4, 6], side_remove_indices=[5, 6])
 modified_pdb = modify_pdb_data(data, transformed_points)
 print(name)
 print(modified_pdb)
+res += name + "\n" + modified_pdb + "\n"
 
 
 name = ">C"
@@ -152,10 +176,11 @@ regex = r'ATOM\s+\d+\s+\w+\s+\w+\s+\w+\s+\d+\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?
 matches = re.findall(regex, data)
 points = np.array([[float(x), float(y), float(z)] for x, y, z in matches])
 np.set_printoptions(precision=3, suppress=True)
-transformed_points = transform_points(points, point_a_index=0, plane_points_indices=[1, 2, 3])
+transformed_points = transform_points(points, point_a_index=0, plane_points_indices=[1, 2, 3],  side_chain_indices=[4, 5], side_remove_indices=[6, 7])
 modified_pdb = modify_pdb_data(data, transformed_points)
 print(name)
 print(modified_pdb)
+res += name + "\n" + modified_pdb + "\n"
 
 
 name = ">D"
@@ -178,10 +203,11 @@ regex = r'ATOM\s+\d+\s+\w+\s+\w+\s+\w+\s+\d+\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?
 matches = re.findall(regex, data)
 points = np.array([[float(x), float(y), float(z)] for x, y, z in matches])
 np.set_printoptions(precision=3, suppress=True)
-transformed_points = transform_points(points, point_a_index=0, plane_points_indices=[1, 2, 3])
+transformed_points = transform_points(points, point_a_index=0, plane_points_indices=[1, 2, 3],  side_chain_indices=[4, 5], side_remove_indices=[8, 9])
 modified_pdb = modify_pdb_data(data, transformed_points)
 print(name)
 print(modified_pdb)
+res += name + "\n" + modified_pdb + "\n"
 
 
 name = ">E"
@@ -207,11 +233,11 @@ regex = r'ATOM\s+\d+\s+\w+\s+\w+\s+\w+\s+\d+\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?
 matches = re.findall(regex, data)
 points = np.array([[float(x), float(y), float(z)] for x, y, z in matches])
 np.set_printoptions(precision=3, suppress=True)
-transformed_points = transform_points(points, point_a_index=0, plane_points_indices=[1, 2, 3])
+transformed_points = transform_points(points, point_a_index=0, plane_points_indices=[1, 2, 3],  side_chain_indices=[4, 5], side_remove_indices=[9, 10])
 modified_pdb = modify_pdb_data(data, transformed_points)
 print(name)
 print(modified_pdb)
-
+res += name + "\n" + modified_pdb + "\n"
 
 name = ">F"
 data = """
@@ -241,10 +267,11 @@ regex = r'ATOM\s+\d+\s+\w+\s+\w+\s+\w+\s+\d+\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?
 matches = re.findall(regex, data)
 points = np.array([[float(x), float(y), float(z)] for x, y, z in matches])
 np.set_printoptions(precision=3, suppress=True)
-transformed_points = transform_points(points, point_a_index=0, plane_points_indices=[1, 2, 3])
+transformed_points = transform_points(points, point_a_index=0, plane_points_indices=[1, 2, 3],  side_chain_indices=[4, 5], side_remove_indices=[11, 12])
 modified_pdb = modify_pdb_data(data, transformed_points)
 print(name)
 print(modified_pdb)
+res += name + "\n" + modified_pdb + "\n"
 
 
 name = ">G"
@@ -266,6 +293,7 @@ transformed_points = transform_points(points, point_a_index=0, plane_points_indi
 modified_pdb = modify_pdb_data(data, transformed_points)
 print(name)
 print(modified_pdb)
+res += name + "\n" + modified_pdb + "\n"
 
 
 name = ">H"
@@ -293,10 +321,11 @@ regex = r'ATOM\s+\d+\s+\w+\s+\w+\s+\w+\s+\d+\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?
 matches = re.findall(regex, data)
 points = np.array([[float(x), float(y), float(z)] for x, y, z in matches])
 np.set_printoptions(precision=3, suppress=True)
-transformed_points = transform_points(points, point_a_index=0, plane_points_indices=[1, 2, 3])
+transformed_points = transform_points(points, point_a_index=0, plane_points_indices=[1, 2, 3],  side_chain_indices=[4, 5], side_remove_indices=[10, 11])
 modified_pdb = modify_pdb_data(data, transformed_points)
 print(name)
 print(modified_pdb)
+res += name + "\n" + modified_pdb + "\n"
 
 
 name = ">I"
@@ -326,10 +355,11 @@ regex = r'ATOM\s+\d+\s+\w+\s+\w+\s+\w+\s+\d+\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?
 matches = re.findall(regex, data)
 points = np.array([[float(x), float(y), float(z)] for x, y, z in matches])
 np.set_printoptions(precision=3, suppress=True)
-transformed_points = transform_points(points, point_a_index=0, plane_points_indices=[1, 2, 3])
+transformed_points = transform_points(points, point_a_index=0, plane_points_indices=[1, 2, 3],  side_chain_indices=[4, 5], side_remove_indices=[8, 9])
 modified_pdb = modify_pdb_data(data, transformed_points)
 print(name)
 print(modified_pdb)
+res += name + "\n" + modified_pdb + "\n"
 
 
 name = ">K"
@@ -362,10 +392,11 @@ regex = r'ATOM\s+\d+\s+\w+\s+\w+\s+\w+\s+\d+\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?
 matches = re.findall(regex, data)
 points = np.array([[float(x), float(y), float(z)] for x, y, z in matches])
 np.set_printoptions(precision=3, suppress=True)
-transformed_points = transform_points(points, point_a_index=0, plane_points_indices=[1, 2, 3])
+transformed_points = transform_points(points, point_a_index=0, plane_points_indices=[1, 2, 3],  side_chain_indices=[4, 5], side_remove_indices=[9, 10])
 modified_pdb = modify_pdb_data(data, transformed_points)
 print(name)
 print(modified_pdb)
+res += name + "\n" + modified_pdb + "\n"
 
 
 name = ">L"
@@ -395,10 +426,11 @@ regex = r'ATOM\s+\d+\s+\w+\s+\w+\s+\w+\s+\d+\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?
 matches = re.findall(regex, data)
 points = np.array([[float(x), float(y), float(z)] for x, y, z in matches])
 np.set_printoptions(precision=3, suppress=True)
-transformed_points = transform_points(points, point_a_index=0, plane_points_indices=[1, 2, 3])
+transformed_points = transform_points(points, point_a_index=0, plane_points_indices=[1, 2, 3],  side_chain_indices=[4, 5], side_remove_indices=[8, 9])
 modified_pdb = modify_pdb_data(data, transformed_points)
 print(name)
 print(modified_pdb)
+res += name + "\n" + modified_pdb + "\n"
 
 
 name = ">M"
@@ -426,55 +458,59 @@ regex = r'ATOM\s+\d+\s+\w+\s+\w+\s+\w+\s+\d+\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?
 matches = re.findall(regex, data)
 points = np.array([[float(x), float(y), float(z)] for x, y, z in matches])
 np.set_printoptions(precision=3, suppress=True)
-transformed_points = transform_points(points, point_a_index=0, plane_points_indices=[1, 2, 3])
+transformed_points = transform_points(points, point_a_index=0, plane_points_indices=[1, 2, 3],  side_chain_indices=[4, 5], side_remove_indices=[8, 9])
 modified_pdb = modify_pdb_data(data, transformed_points)
 print(name)
 print(modified_pdb)
+res += name + "\n" + modified_pdb + "\n"
 
 
 name = ">N"
 data = """
-ATOM     83  N   ASP A   5       5.017  -7.221  -0.172  1.00  0.00           N  
-ATOM     84  CA  ASP A   5       4.956  -6.177  -1.197  1.00  0.00           C  
-ATOM     85  C   ASP A   5       5.039  -6.777  -2.596  1.00  0.00           C  
-ATOM     86  O   ASP A   5       6.119  -6.931  -3.161  1.00  0.00           O  
-ATOM     87  CB  ASP A   5       6.074  -5.147  -0.998  1.00  0.00           C  
-ATOM     88  CG  ASP A   5       5.965  -4.421   0.328  1.00  0.00           C  
-ATOM     89  OD1 ASP A   5       4.938  -3.744   0.557  1.00  0.00           O  
-ATOM     90  OD2 ASP A   5       6.902  -4.528   1.149  1.00  0.00           O  
-ATOM     91  H   ASP A   5       5.829  -7.307   0.371  1.00  0.00           H  
-ATOM     92  HA  ASP A   5       4.004  -5.677  -1.096  1.00  0.00           H  
-ATOM     93  HB2 ASP A   5       7.029  -5.649  -1.035  1.00  0.00           H  
-ATOM     94  HB3 ASP A   5       6.025  -4.416  -1.792  1.00  0.00           H  
-ATOM     95  N   LEU A   6       3.880  -7.102  -3.149  1.00  0.00           N 
+ATOM    423  N   ASN A  29      10.937   3.435 -10.701  1.00  0.00           N  
+ATOM    424  CA  ASN A  29      11.006   3.843  -9.297  1.00  0.00           C  
+ATOM    425  C   ASN A  29       9.786   3.347  -8.525  1.00  0.00           C  
+ATOM    426  O   ASN A  29       9.858   3.111  -7.319  1.00  0.00           O  
+ATOM    427  CB  ASN A  29      11.103   5.371  -9.172  1.00  0.00           C  
+ATOM    428  CG  ASN A  29       9.746   6.065  -9.169  1.00  0.00           C  
+ATOM    429  OD1 ASN A  29       9.136   6.255  -8.122  1.00  0.00           O  
+ATOM    430  ND2 ASN A  29       9.273   6.460 -10.338  1.00  0.00           N  
+ATOM    431  H   ASN A  29      10.846   4.123 -11.395  1.00  0.00           H  
+ATOM    432  HA  ASN A  29      11.892   3.400  -8.868  1.00  0.00           H  
+ATOM    433  HB2 ASN A  29      11.609   5.618  -8.252  1.00  0.00           H  
+ATOM    434  HB3 ASN A  29      11.677   5.754 -10.003  1.00  0.00           H  
+ATOM    435 HD21 ASN A  29       9.817   6.289 -11.143  1.00  0.00           H  
+ATOM    436 HD22 ASN A  29       8.403   6.905 -10.357  1.00  0.00           H  
+ATOM    437  N   ILE A  30       8.676   3.176  -9.239  1.00  0.00           N 
 """
 regex = r'ATOM\s+\d+\s+\w+\s+\w+\s+\w+\s+\d+\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)'
 matches = re.findall(regex, data)
 points = np.array([[float(x), float(y), float(z)] for x, y, z in matches])
 np.set_printoptions(precision=3, suppress=True)
-transformed_points = transform_points(points, point_a_index=0, plane_points_indices=[1, 2, 3])
+transformed_points = transform_points(points, point_a_index=0, plane_points_indices=[1, 2, 3],  side_chain_indices=[4, 5], side_remove_indices=[8, 9])
 modified_pdb = modify_pdb_data(data, transformed_points)
 print(name)
 print(modified_pdb)
+res += name + "\n" + modified_pdb + "\n"
 
 
 name = ">P"
 data = """
-ATOM    508  N   PRO A  35      12.252   7.044  -2.046  1.00  0.00           N  
-ATOM    509  CA  PRO A  35      11.456   8.258  -1.797  1.00  0.00           C  
-ATOM    510  C   PRO A  35      11.844   9.437  -2.686  1.00  0.00           C  
-ATOM    511  O   PRO A  35      10.996  10.253  -3.044  1.00  0.00           O  
-ATOM    512  CB  PRO A  35      11.748   8.587  -0.329  1.00  0.00           C  
-ATOM    513  CG  PRO A  35      12.210   7.304   0.267  1.00  0.00           C  
-ATOM    514  CD  PRO A  35      12.940   6.583  -0.827  1.00  0.00           C  
-ATOM    515  HA  PRO A  35      10.402   8.061  -1.914  1.00  0.00           H  
-ATOM    516  HB2 PRO A  35      12.513   9.347  -0.273  1.00  0.00           H  
-ATOM    517  HB3 PRO A  35      10.847   8.940   0.148  1.00  0.00           H  
-ATOM    518  HG2 PRO A  35      12.875   7.502   1.096  1.00  0.00           H  
-ATOM    519  HG3 PRO A  35      11.361   6.723   0.597  1.00  0.00           H  
-ATOM    520  HD2 PRO A  35      13.982   6.869  -0.839  1.00  0.00           H  
-ATOM    521  HD3 PRO A  35      12.841   5.514  -0.709  1.00  0.00           H  
-ATOM    522  N   GLU A  36      13.112   9.516  -3.059  1.00  0.00           N
+ATOM    380  N   PRO A  26      11.916   7.956 -13.981  1.00  0.00           N  
+ATOM    381  CA  PRO A  26      11.639   6.602 -14.463  1.00  0.00           C  
+ATOM    382  C   PRO A  26      10.571   5.871 -13.653  1.00  0.00           C  
+ATOM    383  O   PRO A  26      10.675   5.761 -12.434  1.00  0.00           O  
+ATOM    384  CB  PRO A  26      12.994   5.912 -14.319  1.00  0.00           C  
+ATOM    385  CG  PRO A  26      13.650   6.594 -13.169  1.00  0.00           C  
+ATOM    386  CD  PRO A  26      13.161   8.016 -13.187  1.00  0.00           C  
+ATOM    387  HA  PRO A  26      11.351   6.609 -15.503  1.00  0.00           H  
+ATOM    388  HB2 PRO A  26      12.846   4.860 -14.125  1.00  0.00           H  
+ATOM    389  HB3 PRO A  26      13.564   6.040 -15.228  1.00  0.00           H  
+ATOM    390  HG2 PRO A  26      13.362   6.113 -12.246  1.00  0.00           H  
+ATOM    391  HG3 PRO A  26      14.723   6.566 -13.289  1.00  0.00           H  
+ATOM    392  HD2 PRO A  26      12.960   8.357 -12.183  1.00  0.00           H  
+ATOM    393  HD3 PRO A  26      13.890   8.657 -13.663  1.00  0.00           H  
+ATOM    394  N   PRO A  27       9.528   5.355 -14.334  1.00  0.00           N 
 """
 regex = r'ATOM\s+\d+\s+\w+\s+\w+\s+\w+\s+\d+\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)'
 matches = re.findall(regex, data)
@@ -484,7 +520,7 @@ transformed_points = transform_points(points, point_a_index=0, plane_points_indi
 modified_pdb = modify_pdb_data(data, transformed_points)
 print(name)
 print(modified_pdb)
-
+res += name + "\n" + modified_pdb + "\n"
 
 name = ">Q"
 data = """
@@ -511,10 +547,11 @@ regex = r'ATOM\s+\d+\s+\w+\s+\w+\s+\w+\s+\d+\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?
 matches = re.findall(regex, data)
 points = np.array([[float(x), float(y), float(z)] for x, y, z in matches])
 np.set_printoptions(precision=3, suppress=True)
-transformed_points = transform_points(points, point_a_index=0, plane_points_indices=[1, 2, 3])
+transformed_points = transform_points(points, point_a_index=0, plane_points_indices=[1, 2, 3],  side_chain_indices=[4, 5], side_remove_indices=[9, 10])
 modified_pdb = modify_pdb_data(data, transformed_points)
 print(name)
 print(modified_pdb)
+res += name + "\n" + modified_pdb + "\n"
 
 name = ">R"
 data = """
@@ -548,10 +585,11 @@ regex = r'ATOM\s+\d+\s+\w+\s+\w+\s+\w+\s+\d+\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?
 matches = re.findall(regex, data)
 points = np.array([[float(x), float(y), float(z)] for x, y, z in matches])
 np.set_printoptions(precision=3, suppress=True)
-transformed_points = transform_points(points, point_a_index=0, plane_points_indices=[1, 2, 3])
+transformed_points = transform_points(points, point_a_index=0, plane_points_indices=[1, 2, 3],  side_chain_indices=[4, 5], side_remove_indices=[11, 12])
 modified_pdb = modify_pdb_data(data, transformed_points)
 print(name)
 print(modified_pdb)
+res += name + "\n" + modified_pdb + "\n"
 
 
 name = ">S"
@@ -573,10 +611,11 @@ regex = r'ATOM\s+\d+\s+\w+\s+\w+\s+\w+\s+\d+\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?
 matches = re.findall(regex, data)
 points = np.array([[float(x), float(y), float(z)] for x, y, z in matches])
 np.set_printoptions(precision=3, suppress=True)
-transformed_points = transform_points(points, point_a_index=0, plane_points_indices=[1, 2, 3])
+transformed_points = transform_points(points, point_a_index=0, plane_points_indices=[1, 2, 3],  side_chain_indices=[4, 5], side_remove_indices=[6, 7])
 modified_pdb = modify_pdb_data(data, transformed_points)
 print(name)
 print(modified_pdb)
+res += name + "\n" + modified_pdb + "\n"
 
 
 name = ">T"
@@ -601,10 +640,11 @@ regex = r'ATOM\s+\d+\s+\w+\s+\w+\s+\w+\s+\d+\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?
 matches = re.findall(regex, data)
 points = np.array([[float(x), float(y), float(z)] for x, y, z in matches])
 np.set_printoptions(precision=3, suppress=True)
-transformed_points = transform_points(points, point_a_index=0, plane_points_indices=[1, 2, 3])
+transformed_points = transform_points(points, point_a_index=0, plane_points_indices=[1, 2, 3],  side_chain_indices=[4, 5], side_remove_indices=[7, 8])
 modified_pdb = modify_pdb_data(data, transformed_points)
 print(name)
 print(modified_pdb)
+res += name + "\n" + modified_pdb + "\n"
 
 
 name = ">V"
@@ -631,10 +671,11 @@ regex = r'ATOM\s+\d+\s+\w+\s+\w+\s+\w+\s+\d+\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?
 matches = re.findall(regex, data)
 points = np.array([[float(x), float(y), float(z)] for x, y, z in matches])
 np.set_printoptions(precision=3, suppress=True)
-transformed_points = transform_points(points, point_a_index=0, plane_points_indices=[1, 2, 3])
+transformed_points = transform_points(points, point_a_index=0, plane_points_indices=[1, 2, 3],  side_chain_indices=[4, 5], side_remove_indices=[7, 8])
 modified_pdb = modify_pdb_data(data, transformed_points)
 print(name)
 print(modified_pdb)
+res += name + "\n" + modified_pdb + "\n"
 
 
 name = ">W"
@@ -669,10 +710,11 @@ regex = r'ATOM\s+\d+\s+\w+\s+\w+\s+\w+\s+\d+\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?
 matches = re.findall(regex, data)
 points = np.array([[float(x), float(y), float(z)] for x, y, z in matches])
 np.set_printoptions(precision=3, suppress=True)
-transformed_points = transform_points(points, point_a_index=0, plane_points_indices=[1, 2, 3])
+transformed_points = transform_points(points, point_a_index=0, plane_points_indices=[1, 2, 3],  side_chain_indices=[4, 5], side_remove_indices=[14, 15])
 modified_pdb = modify_pdb_data(data, transformed_points)
 print(name)
 print(modified_pdb)
+res += name + "\n" + modified_pdb + "\n"
 
 
 name = ">Y"
@@ -704,7 +746,12 @@ regex = r'ATOM\s+\d+\s+\w+\s+\w+\s+\w+\s+\d+\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?
 matches = re.findall(regex, data)
 points = np.array([[float(x), float(y), float(z)] for x, y, z in matches])
 np.set_printoptions(precision=3, suppress=True)
-transformed_points = transform_points(points, point_a_index=0, plane_points_indices=[1, 2, 3])
+transformed_points = transform_points(points, point_a_index=0, plane_points_indices=[1, 2, 3],  side_chain_indices=[4, 5], side_remove_indices=[12, 13])
 modified_pdb = modify_pdb_data(data, transformed_points)
 print(name)
 print(modified_pdb)
+res += name + "\n" + modified_pdb + "\n"
+
+
+with open("amino_acids.txt", "w") as pdb_file:
+    pdb_file.write(res)
