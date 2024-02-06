@@ -1,4 +1,6 @@
 import torch
+import torch.nn as nn
+import torch.optim as optim
 import numpy as np 
 import pandas as pd 
 
@@ -9,13 +11,49 @@ import random
 app = Flask(__name__)
 CORS(app)
 
+class ForceField(nn.Module):
+    def __init__(self):
+        super(ForceField, self).__init__()
+        self.bond_prm = None
+        self.angle_prm = None
+        self.dihedral_prm = None
+        self.vanderwaals_prm = None
+        self.electro_prm = None
+
+        self.bond_k_b = None
+        self.angle_k_t = None
+        self.dihedral_k_c_d = None
+        self.vanderwaals_e_r = None
+        self.electro_kqq = None
+
+    def forward(self, x):
+        return x
+
+class AtomCoordinates(nn.Module):
+    def __init__(self, ):
+        super(AtomCoordinates, self).__init__()
+        self.coordinates = None
+
+        self.amino_acids = None
+        self.atom_names = None
+        self.atom_types = None
+        self.bonds = None
+        self.angles = None
+        self.dihedrals = None
+    
+    def initialize(self, coordinates):
+        self.coordinates = nn.Parameter(coordinates)
+
+    def forward(self):
+        return self.coordinates
 
 class MainApp:
     def __init__(self):
         super().__init__()
-        self.protein = pd.DataFrame(columns=["ATOM", "AtomNum", "AtomType", "Residue", "Chain", "ResidueNum", 
-                                             "X", "Y", "Z", "Occupancy", "TempFactor", "Element"])
         self.amino_acid_data = self.load_amino_acid_data()
+        self.protein_table = pd.DataFrame(columns=["ATOM", "AtomNum", "AtomType", "Residue", "Chain", "ResidueNum", 
+                                             "X", "Y", "Z", "Occupancy", "TempFactor", "Element"])
+        self.atom_coordinates = AtomCoordinates()
 
     def parse_pdb_data(self, pdb_data):
         lines = pdb_data.split('\n')
@@ -55,7 +93,7 @@ class MainApp:
 
         return base_structure
 
-    def load_amino_acid_data(self, filename="amino_acids.txt"):
+    def load_amino_acid_data(self, filename="parameter/aa_coordinates"):
         amino_acid_data = {}
         current_aa = ''
         with open(filename, 'r') as file:
@@ -88,11 +126,11 @@ class MainApp:
             current_pos = (parsed_aa[-1]["X"], parsed_aa[-1]["Y"], parsed_aa[-1]["Z"])
             parsed_aa.pop()
             parsed_data += parsed_aa
-        self.protein = pd.DataFrame(parsed_data)
+        self.protein_table = pd.DataFrame(parsed_data)
+        self.atom_coordinates.initialize(torch.tensor(self.protein_table[['X', 'Y', 'Z']].values))
 
 
 mainapp = MainApp()
-
 
 @app.route('/generateProteinStructure', methods=['POST'])
 def generate_protein_structure():
@@ -104,7 +142,7 @@ def generate_protein_structure():
 @app.route('/getProteinStructure', methods=['GET'])
 def get_protein_structure():
     pdb_formatted_data = ""
-    for index, row in mainapp.protein.iterrows():
+    for index, row in mainapp.protein_table.iterrows():
         pdb_line = f"ATOM  {int(row['AtomNum']):>5} {row['AtomType']:<4} {row['Residue']:<3} {row['Chain']:>1}{int(row['ResidueNum']):>4}    {float(row['X']):>8.3f}{float(row['Y']):>8.3f}{float(row['Z']):>8.3f}{float(row['Occupancy']):>6.2f}{float(row['TempFactor']):>6.2f}          {row['Element']:>2}\n"
         pdb_formatted_data += pdb_line
     return jsonify(pdbData=pdb_formatted_data)
