@@ -4,7 +4,7 @@ ATOM  CA    CT1
 ATOM  C     C 
 ATOM  O     O 
 ATOM  CB    CT3  
-ATOM  HN    H 
+ATOM  H     H 
 ATOM  HA    HB1 
 ATOM  HB1   HA3 
 ATOM  HB2   HA3 
@@ -14,7 +14,7 @@ BOND  CA    N
 BOND  C     CA 
 BOND  O     C 
 BOND  CB    CA 
-BOND  HN    N 
+BOND  H     N 
 BOND  HA    CA 
 BOND  HB1   CB 
 BOND  HB2   CB 
@@ -26,7 +26,7 @@ ATOM  C     C
 ATOM  O     O 
 ATOM  CB    CT2 
 ATOM  SG    S 
-ATOM  HN    H 
+ATOM  H     H 
 ATOM  HA    HB1 
 ATOM  HB1   HA2 
 ATOM  HB2   HA2 
@@ -37,7 +37,7 @@ BOND  C     CA
 BOND  O     C 
 BOND  CB    CA 
 BOND  SG    CB 
-BOND  HN    N 
+BOND  H     N 
 BOND  HA    CA 
 BOND  HB1   CB 
 BOND  HB2   CB 
@@ -51,7 +51,7 @@ ATOM  CB    CT2A
 ATOM  CG    CC 
 ATOM  OD1   OC 
 ATOM  OD2   OC 
-ATOM  HN    H 
+ATOM  H     H 
 ATOM  HA    HB1 
 ATOM  HB1   HA2 
 ATOM  HB2   HA2 
@@ -63,7 +63,7 @@ BOND  CB    CA
 BOND  CG    CB 
 BOND  OD1   CG 
 BOND  OD2   CG 
-BOND  HN    N 
+BOND  H     N 
 BOND  HA    CA 
 BOND  HB1   CB 
 BOND  HB2   CB 
