@@ -23,7 +23,7 @@ class ForceField(nn.Module):
         self.vanderwaals_prm = None
         self.electro_prm = None
 
-        self.bond_k_b = None
+        self.bond_k_b = [None, None, None]
         self.angle_k_t = None
         self.dihedral_k_c_d = None
         self.vanderwaals_e_r = None
@@ -34,6 +34,10 @@ class ForceField(nn.Module):
     
     def initialize(self, atom_coordinates):
         self.init()
+
+        # Read parameter data
+
+
 
 class AtomCoordinates(nn.Module):
     def __init__(self):
@@ -84,6 +88,21 @@ class AtomCoordinates(nn.Module):
             if aa not in self.aa_coordinates:
                 continue
             parsed_aa = self.parse_pdb(self.aa_coordinates[aa])
+            if id == 0:
+                for i, d in enumerate(parsed_aa):
+                    if d.get("AtomType") == "H":
+                        new_H = [d.copy() for i in range(3)]
+                        new_a = ["H1", "H2", "H3"]
+                        new_x = [ 0.000, -0.461, -0.461]
+                        new_y = [-0.980,  0.327, -0.327]
+                        new_z = [ 0.000,  0.800, -0.800]
+                        for j in range(3):
+                            new_H[j]['AtomType'] = new_a[j]
+                            new_H[j]['X'] = new_x[j]
+                            new_H[j]['Y'] = new_y[j]
+                            new_H[j]['Z'] = new_z[j]
+                        parsed_aa[i:i+1] = new_H
+                        break
             res_num += 1
             for line in parsed_aa:
                 atom_num += 1
@@ -111,10 +130,25 @@ class AtomCoordinates(nn.Module):
         nam_idx = {"-C":-1}
         graph = []
         atom_idx = 0
-        for aa in protein_sequence:
+        for id, aa in enumerate(protein_sequence):
             if aa not in self.aa_connectivity:
                 continue
             lines = self.aa_connectivity[aa].split('\n')
+            if id == 0:
+                pos = lines.index("ATOM  N     NH1")
+                lines[pos] = "ATOM  N     NH3"
+                pos = lines.index("ATOM  H     H")
+                lines[pos:pos+1] = ["ATOM  H1    HC", "ATOM  H2    HC", "ATOM  H3    HC"]
+                pos = lines.index("BOND  H     N")
+                lines[pos:pos+1] = ["BOND  H1    N", "BOND  H2    N", "BOND  H3    N"]
+            if id == len(protein_sequence)-1:
+                pos = lines.index("ATOM  C     C")
+                lines[pos] = "ATOM  C     CC"
+                pos = lines.index("ATOM  O     O")
+                lines[pos] = "ATOM  O     OC"
+                pos = lines.index("BOND  N     -C")
+                lines.insert(pos, "ATOM  OXT   OC")
+                lines.append("BOND  OXT   C")
             for line in lines:
                 record = line.split()
                 if line.startswith("ATOM"):
@@ -124,6 +158,8 @@ class AtomCoordinates(nn.Module):
                     nam_idx[record[1]] = atom_idx
                     graph.append([])
                     atom_idx += 1
+                    if id == len(protein_sequence)-1 and self.atom_types[-1] == "O":
+                        self.atom_types[-1] = "OC"
                 if line.startswith("BOND"):
                     v, u = nam_idx[record[1]], nam_idx[record[2]]
                     if u != -1:
@@ -131,15 +167,6 @@ class AtomCoordinates(nn.Module):
                         graph[u].append(v)
                     self.dfs(graph, v, -1, [v])
             nam_idx["-C"] = nam_idx["C"]
-        self.amino_acids.append(self.amino_acids[-1])
-        self.atom_names.append("OXT")
-        self.atom_types.append("OC")
-        nam_idx["OXT"] = atom_idx
-        graph.append([])
-        v, u = nam_idx["OXT"], nam_idx["-C"]
-        graph[v].append(u)
-        graph[u].append(v)
-        self.dfs(graph, v, -1, [v])
     
     def dfs(self, adj, v, p, arr):
         if len(arr) > 4:
