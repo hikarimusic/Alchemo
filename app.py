@@ -23,20 +23,43 @@ class ForceField(nn.Module):
         self.vanderwaals_prm = None
         self.electro_prm = None
 
-        self.bond_k_b = [None, None, None]
+        self.bond_k_b = None
         self.angle_k_t = None
         self.dihedral_k_c_d = None
         self.vanderwaals_e_r = None
         self.electro_kqq = None
 
     def forward(self, x):
-        return x
+        pairs, kb, b0 = self.bond_k_b["bond"], self.bond_k_b["kb"], self.bond_k_b["b0"]
+        vec_s = x[pairs[:, 0]]
+        vec_t = x[pairs[:, 1]]
+        dis = torch.sqrt(torch.sum((vec_s - vec_t) ** 2, dim=1))
+        V_bond = torch.sum(kb * (dis - b0) ** 2)
+
+        V = V_bond
+        return V
     
     def initialize(self, atom_coordinates):
         self.init()
 
         # Read parameter data
-
+        self.bond_prm = pd.read_csv("parameter/ff_bond", sep='\s+', header=None, names=["Atom1", "Atom2", "Kb", "b0"])
+        self.bond_prm[['Atom1', 'Atom2']] = self.bond_prm.apply(
+            lambda row: pd.Series(sorted([row['Atom1'], row['Atom2']])), axis=1
+        )
+        bonds, kb, b0 = atom_coordinates.bonds, [], []
+        for x, y in atom_coordinates.bonds:
+            A1 = atom_coordinates.atom_types[x]
+            A2 = atom_coordinates.atom_types[y]
+            A1, A2 = sorted([A1, A2])
+            matching_row = self.bond_prm[(self.bond_prm['Atom1']==A1) & (self.bond_prm['Atom2']==A2)]
+            kb.append(matching_row['Kb'].iloc[0])
+            b0.append(matching_row['b0'].iloc[0])
+        self.bond_k_b = {
+            "bond": torch.tensor(bonds),
+            "kb": torch.tensor(kb),
+            "b0": torch.tensor(b0)
+        }
 
 
 class AtomCoordinates(nn.Module):
@@ -228,6 +251,9 @@ class MainApp:
     def protein_from_sequence(self, protein_sequence):
         self.atom_coordinates.initialize(protein_sequence)
         self.force_field.initialize(self.atom_coordinates)
+
+        res = self.force_field(self.atom_coordinates())
+        print(res)
     
     def get_protein_structure(self):
         return self.atom_coordinates.pdb_table
