@@ -45,28 +45,23 @@ function showProtein() {
 }
 
 // Simulate Portein
-let animationInterval;
 function simulateProtein() {
-    if (animationInterval) {
-        clearInterval(animationInterval);
-    }
-    animationInterval = setInterval(() => {
-        fetch('http://localhost:5000/simulateProtein')
-        .then(response => response.json())
-        .then(data => {
-            viewer.clear();
-            viewer.addModel(data.pdbData, "pdb");
-            applyStyle('protein');
-            viewer.zoomTo();
-            viewer.render();
-        })
-        .catch(error => console.error('Error simulating protein structure:', error));
-    }, 100); // 100ms
-}
-
-// Stop Protein Animation
-function stopProtein() {
-    clearInterval(animationInterval);
+    fetch('http://localhost:5000/simulateProtein')
+    .then(response => response.json())
+    .then(data => {
+        viewer.clear();
+        viewer.addModel(data.pdbData, "pdb");
+        applyStyle('protein');
+        viewer.zoomTo();
+        viewer.render();
+        if (isSimulationRunning) {
+            setTimeout(simulateProtein, 100);
+        }
+    })
+    .catch(error => {
+        console.error('Error simulating protein structure:', error);
+        isSimulationRunning = false;
+    });
 }
 
 // Event Listeners
@@ -80,11 +75,12 @@ document.getElementById("styleSelect").addEventListener("change", function() {
 });
 
 document.getElementById("simulateButton").addEventListener("click", function() {
+    isSimulationRunning = true;
     simulateProtein();
 });
 
 document.getElementById("stopButton").addEventListener("click", function() {
-    stopProtein();
+    isSimulationRunning = false;
 });
 
 

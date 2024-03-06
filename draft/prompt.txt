@@ -1,0 +1,43 @@
+I have a pandas dataframe, vanderwaals_prm:
+    Atom  epsilon  Rmin/2
+0      C  -0.1100  2.0000
+1     CA  -0.0700  1.9924
+2     CC  -0.0700  2.0000
+3     CD  -0.0700  2.0000
+4    CE1  -0.0680  2.0900
+5    CE2  -0.0640  2.0800
+...
+
+I have a list of string, atom_types:
+['NH3', 'CT1', 'C', 'O', 'CT3',...]
+
+I have a pytorch tensor, x:
+tensor([[ 0.0000,  0.0000,  0.0000],
+        [ 1.1370,  0.9100,  0.0000],
+        [ 2.4500,  0.1340,  0.0000],
+        ......
+
+The code should construct some tensors, as well as a forward method. The goal is to compute the total sum of vanderwaals potential between each pair of atoms. The vanderwaals potential is defined as: V(Lennard-Jones) = Eps,i,j[(Rmin,i,j/ri,j)**12 - 2(Rmin,i,j/ri,j)**6], where Eps,i,j = sqrt(eps,i * eps,j), and Rmin/2,i + Rmin/2,j. Therefore, the code should construct some tensors that contains the data of Eps,i,j and Rmin/2,i,j. And the forward method should take x, the atom coordinates, as input, and then calculate the total vanderwaals potential between each pair of atoms. 
+
+An example of the construction of bond potential:
+        bonds, kb, b0 = atom_coordinates.bonds, [], []
+        for x, y in atom_coordinates.bonds:
+            A1 = atom_coordinates.atom_types[x]
+            A2 = atom_coordinates.atom_types[y]
+            A1, A2 = sorted([A1, A2])
+            matching_row = self.bond_prm[(self.bond_prm['Atom1']==A1) & (self.bond_prm['Atom2']==A2)]
+            kb.append(matching_row['Kb'].iloc[0])
+            b0.append(matching_row['b0'].iloc[0])
+        self.bond_k_b = {
+            "bond": torch.tensor(bonds),
+            "kb": torch.tensor(kb),
+            "b0": torch.tensor(b0)
+        }
+
+An example of the forward method for the bond potential:
+    def forward(self, x):
+        pairs, kb, b0 = self.bond_k_b["bond"], self.bond_k_b["kb"], self.bond_k_b["b0"]
+        vec_s = x[pairs[:, 0]]
+        vec_t = x[pairs[:, 1]]
+        dis = torch.sqrt(torch.sum((vec_s - vec_t) ** 2, dim=1))
+        V_bond = torch.sum(kb * (dis - b0) ** 2)

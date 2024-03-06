@@ -29,13 +29,22 @@ class ForceField(nn.Module):
         self.electro_kqq = {}
 
     def forward(self, x):
+        # bond
         pairs, kb, b0 = self.bond_k_b["bond"], self.bond_k_b["kb"], self.bond_k_b["b0"]
         vec_s = x[pairs[:, 0]]
         vec_t = x[pairs[:, 1]]
         dis = torch.sqrt(torch.sum((vec_s - vec_t) ** 2, dim=1))
         V_bond = torch.sum(kb * (dis - b0) ** 2)
 
-        V = V_bond
+        # vanderwaals
+        eps_ij, rmin_ij = self.vanderwaals_e_r["eps_ij"], self.vanderwaals_e_r["rmin_ij"]
+        dist = torch.cdist(x, x) + torch.eye(x.size()[0])
+        rod = rmin_ij / dist
+        vdw_potential = eps_ij * (torch.pow(rod, 12) - 2 * torch.pow(rod, 6))
+        i_upper = torch.triu_indices(vdw_potential.size(0), vdw_potential.size(1), offset=1)
+        V_vanderwaals = vdw_potential[i_upper[0], i_upper[1]].sum()
+
+        V = V_bond + V_vanderwaals
         return V
     
     def initialize(self, atom_coordinates):
@@ -46,6 +55,9 @@ class ForceField(nn.Module):
         self.bond_prm[['Atom1', 'Atom2']] = self.bond_prm.apply(
             lambda row: pd.Series(sorted([row['Atom1'], row['Atom2']])), axis=1
         )
+        self.vanderwaals_prm = pd.read_csv("parameter/ff_vanderwaals", sep='\s+', header=None, names=["Atom", "epsilon", "Rmin/2"])
+
+        # Build bond potential
         bonds, kb, b0 = atom_coordinates.bonds, [], []
         for x, y in atom_coordinates.bonds:
             A1 = atom_coordinates.atom_types[x]
@@ -58,6 +70,29 @@ class ForceField(nn.Module):
             "bond": torch.tensor(bonds),
             "kb": torch.tensor(kb),
             "b0": torch.tensor(b0)
+        }
+
+        # Build vanderwaals potential
+        eps, rmin = [], []
+        for A in atom_coordinates.atom_types:
+            matching_row = self.vanderwaals_prm[(self.vanderwaals_prm['Atom']==A)]
+            eps.append(matching_row["epsilon"].iloc[0])
+            rmin.append(matching_row["Rmin/2"].iloc[0])
+        eps = torch.tensor(eps)
+        rmin = torch.tensor(rmin)
+        eps_ij = torch.sqrt(eps[:, None] * eps)
+        rmin_ij = rmin[:, None] + rmin
+        for bond in atom_coordinates.bonds:
+            i, j = bond
+            eps_ij[i, j] = 0
+            eps_ij[j, i] = 0
+        for angle in atom_coordinates.angles:
+            i, j = angle[0], angle[2]
+            eps_ij[i, j] = 0
+            eps_ij[j, i] = 0
+        self.vanderwaals_e_r = {
+            "eps_ij": eps_ij,
+            "rmin_ij": rmin_ij
         }
 
 class AtomCoordinates(nn.Module):
@@ -189,6 +224,10 @@ class AtomCoordinates(nn.Module):
                     self.dfs(graph, v, -1, [v])
             nam_idx["-C"] = nam_idx["C"]
     
+    def addNoise(self, vol=1):
+        noise = torch.randn_like(self.coordinates) * vol
+        self.coordinates.data.add_(noise)
+    
     def render(self):
         self.pdb_table['X'] = self.coordinates[:, 0].detach().numpy()
         self.pdb_table['Y'] = self.coordinates[:, 1].detach().numpy()
@@ -265,6 +304,7 @@ class MainApp:
         potential_energy = torch.sum(self.force_field(self.atom_coordinates()))
         potential_energy.backward()
         self.atom_optimizer.step()
+        # self.atom_coordinates.addNoise(vol=0.02)
 
 @app.route('/loadProtein', methods=['POST'])
 def loadProtein():
