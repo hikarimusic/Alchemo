@@ -41,3 +41,67 @@ An example of the forward method for the bond potential:
         vec_t = x[pairs[:, 1]]
         dis = torch.sqrt(torch.sum((vec_s - vec_t) ** 2, dim=1))
         V_bond = torch.sum(kb * (dis - b0) ** 2)
+
+
+
+
+
+
+
+
+
+
+Please write a python code for the following taks:
+
+I have a pandas dataframe, bond_prm:
+    Atom1 Atom2     Kb     b0
+0      CA    CA  305.0  1.375
+1     CE1   CE1  440.0  1.340
+2     CE1   CE2  500.0  1.342
+3     CE1   CT2  365.0  1.502
+4     CE1   CT3  383.0  1.504
+..    ...   ...    ...    ...
+103     S    HS  275.0  1.325
+104    SM   CT2  214.0  1.816
+105    SM   CT3  214.0  1.816
+106    SM    SM  173.0  2.029
+107    SS    CS  205.0  1.836
+
+I have a list of string, atom_types:
+['NH3', 'CT1', 'C', 'O', 'CT3', 'HC', 'HC', 'HC', 'HB1', 'HA3', 'HA3', 'HA3', 'NH1', 'CT1', 'CC', 'OC', 'CT3', 'H', 'HB1', 'HA3', 'HA3', 'HA3', 'OC']
+
+I have a list of list, bonds:
+[[0, 1], [1, 2], [2, 3], [1, 4], [0, 5], [0, 6], [0, 7], [1, 8], [4, 9], [4, 10], [4, 11], [2, 12], [12, 13], [13, 14], [14, 15], [13, 16], [12, 17], [13, 18], [16, 19], [16, 20], [16, 21], [14, 22]]
+
+The code should construct two list, bond_kb and bond_b0, such that:
+for the i-th element of kb and b0, you should examine the i-th pair in bonds, for example, [x, y]. Then you should find the x-th and y-th element of atom_types, for example, atom_types[x]=A1, atom_types[y]=A2. You should sort A1 and A2 so that A1 is in front of A2 in lexicographic order. Then, you should search the bond_prm, find the row such that its Atom1 is A1, its Atom2 is A2. Then the Kb and b0 will be the i-th element of bond_kb and bond_b0.
+
+
+
+
+
+
+
+
+
+
+
+
+Please write a python code to do the following:
+
+I have a pytorch tensor, x:
+tensor([[ 0.0000,  0.0000,  0.0000],
+        [ 1.1370,  0.9100,  0.0000],
+        [ 2.4500,  0.1340,  0.0000],
+        ......
+
+I have a list of pair, bond_k_b[0]:
+[[0, 1], [1, 2], [2, 3], ...]
+
+I have a list of number, bond_k_b[1]:
+[200.0, 250.0, 620.0, ...]
+
+I have a list of number, bond_k_b[2]:
+[1.48, 1.49, 1.23, ...]
+
+Please code to calculate a sum. For each i, find the i-th pair in bond_k_b[0], for example [s, t], choose out the s-th and t-th row of x. They are three-dimension vectors, so calculated the distance between them, that it be b. Then calculate the value V=Kb(b - b0)**2, where Kb is the i-th value of  bond_k_b[1], and b0 is the i-th value of bond_k_b[2]. Sum up all the V for all i, then it is the answer, that it be V_bond. Feel free to change any python list into pytorch tensor if it can make the calculation more efficient.

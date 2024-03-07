@@ -29,36 +29,52 @@ class ForceField(nn.Module):
         self.electro_kqq = {}
 
     def forward(self, x):
-        # bond
-        pairs, kb, b0 = self.bond_k_b["bond"], self.bond_k_b["kb"], self.bond_k_b["b0"]
-        vec_s = x[pairs[:, 0]]
-        vec_t = x[pairs[:, 1]]
+        # Bond
+        bond, kb, b0 = self.bond_k_b["bond"], self.bond_k_b["kb"], self.bond_k_b["b0"]
+        vec_s = x[bond[:, 0]]
+        vec_t = x[bond[:, 1]]
         dis = torch.sqrt(torch.sum((vec_s - vec_t) ** 2, dim=1))
         V_bond = torch.sum(kb * (dis - b0) ** 2)
 
-        # vanderwaals
+        # Angle
+        angle, kt, t0 = self.angle_k_t["angle"], self.angle_k_t["kt"], self.angle_k_t["t0"]
+        t0 = torch.deg2rad(t0)
+        vec_ba = x[angle[:, 0]] - x[angle[:, 1]]
+        vec_bc = x[angle[:, 2]] - x[angle[:, 1]]
+        norm_ba = torch.linalg.norm(vec_ba, dim=1)
+        norm_bc = torch.linalg.norm(vec_bc, dim=1)
+        cos_t = (vec_ba * vec_bc).sum(dim=1) / (norm_ba * norm_bc)
+        cos_t = torch.clamp(cos_t, -1.0, 1.0)
+        theta = torch.acos(cos_t)
+        V_angle = torch.sum(kt * (theta - t0) ** 2)
+
+        # Vanderwaals
         eps_ij, rmin_ij = self.vanderwaals_e_r["eps_ij"], self.vanderwaals_e_r["rmin_ij"]
-        dist = torch.cdist(x, x) + torch.eye(x.size()[0])
+        dist = torch.cdist(x, x) + torch.eye(x.size()[0]).to(x.device)
         rod = rmin_ij / dist
         vdw_potential = eps_ij * (torch.pow(rod, 12) - 2 * torch.pow(rod, 6))
-        i_upper = torch.triu_indices(vdw_potential.size(0), vdw_potential.size(1), offset=1)
+        i_upper = torch.triu_indices(vdw_potential.size(0), vdw_potential.size(1), offset=1).to(x.device)
         V_vanderwaals = vdw_potential[i_upper[0], i_upper[1]].sum()
 
-        V = V_bond + V_vanderwaals
+        # Electro
+        kqq_ij = self.electro_kqq["kqq_ij"]
+        dist = torch.cdist(x, x) + torch.eye(x.size()[0]).to(x.device)
+        ele_potential = kqq_ij / dist
+        i_upper = torch.triu_indices(ele_potential.size(0), ele_potential.size(1), offset=1).to(x.device)
+        V_electro = ele_potential[i_upper[0], i_upper[1]].sum()
+
+        V = V_bond + V_angle + V_vanderwaals + V_electro
         return V
     
-    def initialize(self, atom_coordinates):
+    def initialize(self, atom_coordinates, device):
         self.init()
 
-        # Read parameter data
+        # Build bond potential
         self.bond_prm = pd.read_csv("parameter/ff_bond", sep='\s+', header=None, names=["Atom1", "Atom2", "Kb", "b0"])
         self.bond_prm[['Atom1', 'Atom2']] = self.bond_prm.apply(
             lambda row: pd.Series(sorted([row['Atom1'], row['Atom2']])), axis=1
         )
-        self.vanderwaals_prm = pd.read_csv("parameter/ff_vanderwaals", sep='\s+', header=None, names=["Atom", "epsilon", "Rmin/2"])
-
-        # Build bond potential
-        bonds, kb, b0 = atom_coordinates.bonds, [], []
+        bond, kb, b0 = atom_coordinates.bonds, [], []
         for x, y in atom_coordinates.bonds:
             A1 = atom_coordinates.atom_types[x]
             A2 = atom_coordinates.atom_types[y]
@@ -67,12 +83,33 @@ class ForceField(nn.Module):
             kb.append(matching_row['Kb'].iloc[0])
             b0.append(matching_row['b0'].iloc[0])
         self.bond_k_b = {
-            "bond": torch.tensor(bonds),
-            "kb": torch.tensor(kb),
-            "b0": torch.tensor(b0)
+            "bond": torch.tensor(bond).to(device),
+            "kb": torch.tensor(kb).to(device),
+            "b0": torch.tensor(b0).to(device)
+        }
+
+        # Build angle potential
+        self.angle_prm = pd.read_csv("parameter/ff_angle", sep='\s+', header=None, names=["Atom1", "Atom2", "Atom3", "Kt", "t0"])
+        self.angle_prm[['Atom1', 'Atom3']] = self.angle_prm.apply(
+            lambda row: pd.Series(sorted([row['Atom1'], row['Atom3']])), axis=1
+        )
+        angle, kt, t0 = atom_coordinates.angles, [], []
+        for x, y, z in atom_coordinates.angles:
+            A1 = atom_coordinates.atom_types[x]
+            A2 = atom_coordinates.atom_types[y]
+            A3 = atom_coordinates.atom_types[z]
+            A1, A3 = sorted([A1, A3])
+            matching_row = self.angle_prm[(self.angle_prm['Atom1']==A1) & (self.angle_prm['Atom2']==A2) & (self.angle_prm['Atom3']==A3)]
+            kt.append(matching_row['Kt'].iloc[0])
+            t0.append(matching_row['t0'].iloc[0])
+        self.angle_k_t = {
+            "angle": torch.tensor(angle).to(device),
+            "kt": torch.tensor(kt).to(device),
+            "t0": torch.tensor(t0).to(device)
         }
 
         # Build vanderwaals potential
+        self.vanderwaals_prm = pd.read_csv("parameter/ff_vanderwaals", sep='\s+', header=None, names=["Atom", "epsilon", "Rmin/2"])
         eps, rmin = [], []
         for A in atom_coordinates.atom_types:
             matching_row = self.vanderwaals_prm[(self.vanderwaals_prm['Atom']==A)]
@@ -91,8 +128,51 @@ class ForceField(nn.Module):
             eps_ij[i, j] = 0
             eps_ij[j, i] = 0
         self.vanderwaals_e_r = {
-            "eps_ij": eps_ij,
-            "rmin_ij": rmin_ij
+            "eps_ij": eps_ij.to(device),
+            "rmin_ij": rmin_ij.to(device)
+        }
+
+        # Build electro potential
+        self.electro_prm = {}
+        current_key = None
+        current_data = []
+        with open("parameter/ff_electro", 'r') as file:
+            for line in file:
+                line = line.strip()
+                if line.startswith('>'):
+                    if current_key is not None and current_data:
+                        self.electro_prm[current_key] = pd.DataFrame(current_data, columns=["Atom", "Q"])
+                    current_key = line[1:].strip()
+                    current_data = []
+                else:
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        current_data.append([parts[0], float(parts[1])])
+            if current_key is not None and current_data:
+                self.electro_prm[current_key] = pd.DataFrame(current_data, columns=["Atom", "Q"])
+        qs = []
+        for id, aa, A in zip(atom_coordinates.res_num, atom_coordinates.amino_acids, atom_coordinates.atom_names):
+            aa_table = self.electro_prm[aa]
+            if id == 0:
+                aa_table = pd.concat([aa_table, self.electro_prm["NTER"]])
+                aa_table = aa_table.drop_duplicates(subset='Atom', keep='last').reset_index(drop=True)
+            if id == atom_coordinates.res_num[-1]:
+                aa_table = pd.concat([aa_table, self.electro_prm["CTER"]])
+                aa_table = aa_table.drop_duplicates(subset='Atom', keep='last').reset_index(drop=True)
+            matching_row = aa_table[(aa_table['Atom']==A)]
+            qs.append(matching_row["Q"].iloc[0])
+        qs = torch.tensor(qs)
+        kqq_ij = 322 * qs[:, None] * qs
+        for bond in atom_coordinates.bonds:
+            i, j = bond
+            kqq_ij[i, j] = 0
+            kqq_ij[j, i] = 0
+        for angle in atom_coordinates.angles:
+            i, j = angle[0], angle[2]
+            kqq_ij[i, j] = 0
+            kqq_ij[j, i] = 0
+        self.electro_kqq = {
+            "kqq_ij": kqq_ij.to(device)
         }
 
 class AtomCoordinates(nn.Module):
@@ -107,6 +187,7 @@ class AtomCoordinates(nn.Module):
         self.coordinates = None
         self.pdb_table = None
 
+        self.res_num = []
         self.amino_acids = []
         self.atom_names = []
         self.atom_types = []
@@ -114,7 +195,7 @@ class AtomCoordinates(nn.Module):
         self.angles = []
         self.dihedrals = []
     
-    def initialize(self, protein_sequence):
+    def initialize(self, protein_sequence, device):
         self.init()
 
         # Read amino acid data
@@ -123,7 +204,7 @@ class AtomCoordinates(nn.Module):
         with open("parameter/aa_coordinates", 'r') as file:
             for line in file:
                 if line.startswith('>'):
-                    current_aa = line[1].strip()
+                    current_aa = line[1:].strip()
                     self.aa_coordinates[current_aa] = ''
                 else:
                     self.aa_coordinates[current_aa] += line
@@ -132,7 +213,7 @@ class AtomCoordinates(nn.Module):
         with open("parameter/aa_connectivity", 'r') as file:
             for line in file:
                 if line.startswith('>'):
-                    current_aa = line[1].strip()
+                    current_aa = line[1:].strip()
                     self.aa_connectivity[current_aa] = ''
                 else:
                     self.aa_connectivity[current_aa] += line    
@@ -198,6 +279,8 @@ class AtomCoordinates(nn.Module):
                 pos = lines.index("BOND  H     N")
                 lines[pos:pos+1] = ["BOND  H1    N", "BOND  H2    N", "BOND  H3    N"]
             if id == len(protein_sequence)-1:
+                print(aa)
+                print(lines)
                 pos = lines.index("ATOM  C     C")
                 lines[pos] = "ATOM  C     CC"
                 pos = lines.index("ATOM  O     O")
@@ -208,6 +291,7 @@ class AtomCoordinates(nn.Module):
             for line in lines:
                 record = line.split()
                 if line.startswith("ATOM"):
+                    self.res_num.append(id)
                     self.amino_acids.append(aa)
                     self.atom_names.append(record[1])
                     self.atom_types.append(record[2])
@@ -229,9 +313,9 @@ class AtomCoordinates(nn.Module):
         self.coordinates.data.add_(noise)
     
     def render(self):
-        self.pdb_table['X'] = self.coordinates[:, 0].detach().numpy()
-        self.pdb_table['Y'] = self.coordinates[:, 1].detach().numpy()
-        self.pdb_table['Z'] = self.coordinates[:, 2].detach().numpy()
+        self.pdb_table['X'] = self.coordinates[:, 0].cpu().detach().numpy()
+        self.pdb_table['Y'] = self.coordinates[:, 1].cpu().detach().numpy()
+        self.pdb_table['Z'] = self.coordinates[:, 2].cpu().detach().numpy()
         return self.pdb_table
 
     def dfs(self, adj, v, p, arr):
@@ -287,11 +371,15 @@ class MainApp:
         super().__init__()
         self.atom_coordinates = AtomCoordinates()
         self.force_field = ForceField()
+        self.device = 'cuda:0'
 
     def protein_from_sequence(self, protein_sequence):
-        self.atom_coordinates.initialize(protein_sequence)
-        self.force_field.initialize(self.atom_coordinates)
-        self.atom_optimizer = optim.Adam(self.atom_coordinates.parameters(), lr=0.1)
+        self.atom_coordinates.initialize(protein_sequence, self.device)
+        self.force_field.initialize(self.atom_coordinates, self.device)
+        self.atom_coordinates.to(self.device)
+        self.force_field.to(self.device)
+        # self.atom_optimizer = optim.Adam(self.atom_coordinates.parameters(), lr=0.1)
+        self.atom_optimizer = optim.SGD(self.atom_coordinates.parameters(), lr=0.01, momentum=0.9)
         potential_energy = torch.sum(self.force_field(self.atom_coordinates()))
         potential_energy.backward()
     
@@ -303,8 +391,9 @@ class MainApp:
         self.atom_optimizer.zero_grad()
         potential_energy = torch.sum(self.force_field(self.atom_coordinates()))
         potential_energy.backward()
+        torch.nn.utils.clip_grad_norm_(self.atom_coordinates.coordinates, 100)
         self.atom_optimizer.step()
-        # self.atom_coordinates.addNoise(vol=0.02)
+        self.atom_coordinates.addNoise(vol=0.02)
 
 @app.route('/loadProtein', methods=['POST'])
 def loadProtein():

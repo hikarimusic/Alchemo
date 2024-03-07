@@ -52,10 +52,10 @@ function simulateProtein() {
         viewer.clear();
         viewer.addModel(data.pdbData, "pdb");
         applyStyle('protein');
-        viewer.zoomTo();
+        // viewer.zoomTo();
         viewer.render();
         if (isSimulationRunning) {
-            setTimeout(simulateProtein, 100);
+            setTimeout(simulateProtein, 1);
         }
     })
     .catch(error => {
