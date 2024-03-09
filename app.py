@@ -24,7 +24,7 @@ class ForceField(nn.Module):
 
         self.bond_k_b = {}
         self.angle_k_t = {}
-        self.dihedral_k_c_d = {}
+        self.dihedral_k_n_d = {}
         self.vanderwaals_e_r = {}
         self.electro_kqq = {}
 
@@ -44,9 +44,23 @@ class ForceField(nn.Module):
         norm_ba = torch.linalg.norm(vec_ba, dim=1)
         norm_bc = torch.linalg.norm(vec_bc, dim=1)
         cos_t = (vec_ba * vec_bc).sum(dim=1) / (norm_ba * norm_bc)
-        cos_t = torch.clamp(cos_t, -1.0, 1.0)
+        cos_t = torch.clamp(cos_t, -0.9999, 0.9999)
         theta = torch.acos(cos_t)
         V_angle = torch.sum(kt * (theta - t0) ** 2)
+
+        # Dihedral
+        dihedral, kd, nd, d0 = self.dihedral_k_n_d["dihedral"], self.dihedral_k_n_d["kd"], self.dihedral_k_n_d["nd"], self.dihedral_k_n_d["d0"]
+        d0 = torch.deg2rad(d0)
+        vec_ab = x[dihedral[:, 1]] - x[dihedral[:, 0]]
+        vec_bc = x[dihedral[:, 2]] - x[dihedral[:, 1]]
+        vec_cd = x[dihedral[:, 3]] - x[dihedral[:, 2]]
+        norm_abc = torch.cross(vec_ab, vec_bc, dim=1)
+        norm_bcd = torch.cross(vec_bc, vec_cd, dim=1)
+        cos_d = (norm_abc * norm_bcd).sum(dim=1) / (torch.linalg.norm(norm_abc, dim=1) * torch.linalg.norm(norm_bcd, dim=1))
+        cos_d = torch.clamp(cos_d, -0.9999, 0.9999)
+        delta = torch.acos(cos_d)
+        delta = delta * torch.sign((torch.cross(norm_abc, norm_bcd) * vec_bc).sum(dim=1))
+        V_dihedral = torch.sum(kd * (1 + torch.cos(nd * delta - d0)))
 
         # Vanderwaals
         eps_ij, rmin_ij = self.vanderwaals_e_r["eps_ij"], self.vanderwaals_e_r["rmin_ij"]
@@ -63,7 +77,7 @@ class ForceField(nn.Module):
         i_upper = torch.triu_indices(ele_potential.size(0), ele_potential.size(1), offset=1).to(x.device)
         V_electro = ele_potential[i_upper[0], i_upper[1]].sum()
 
-        V = V_bond + V_angle + V_vanderwaals + V_electro
+        V = V_bond + V_angle + V_dihedral + V_vanderwaals + V_electro
         return V
     
     def initialize(self, atom_coordinates, device):
@@ -71,15 +85,13 @@ class ForceField(nn.Module):
 
         # Build bond potential
         self.bond_prm = pd.read_csv("parameter/ff_bond", sep='\s+', header=None, names=["Atom1", "Atom2", "Kb", "b0"])
-        self.bond_prm[['Atom1', 'Atom2']] = self.bond_prm.apply(
-            lambda row: pd.Series(sorted([row['Atom1'], row['Atom2']])), axis=1
-        )
         bond, kb, b0 = atom_coordinates.bonds, [], []
         for x, y in atom_coordinates.bonds:
             A1 = atom_coordinates.atom_types[x]
             A2 = atom_coordinates.atom_types[y]
-            A1, A2 = sorted([A1, A2])
             matching_row = self.bond_prm[(self.bond_prm['Atom1']==A1) & (self.bond_prm['Atom2']==A2)]
+            if len(matching_row) == 0:
+                matching_row = self.bond_prm[(self.bond_prm['Atom1']==A2) & (self.bond_prm['Atom2']==A1)]
             kb.append(matching_row['Kb'].iloc[0])
             b0.append(matching_row['b0'].iloc[0])
         self.bond_k_b = {
@@ -90,22 +102,43 @@ class ForceField(nn.Module):
 
         # Build angle potential
         self.angle_prm = pd.read_csv("parameter/ff_angle", sep='\s+', header=None, names=["Atom1", "Atom2", "Atom3", "Kt", "t0"])
-        self.angle_prm[['Atom1', 'Atom3']] = self.angle_prm.apply(
-            lambda row: pd.Series(sorted([row['Atom1'], row['Atom3']])), axis=1
-        )
         angle, kt, t0 = atom_coordinates.angles, [], []
         for x, y, z in atom_coordinates.angles:
             A1 = atom_coordinates.atom_types[x]
             A2 = atom_coordinates.atom_types[y]
             A3 = atom_coordinates.atom_types[z]
-            A1, A3 = sorted([A1, A3])
             matching_row = self.angle_prm[(self.angle_prm['Atom1']==A1) & (self.angle_prm['Atom2']==A2) & (self.angle_prm['Atom3']==A3)]
+            if len(matching_row) == 0:
+                matching_row = self.angle_prm[(self.angle_prm['Atom1']==A3) & (self.angle_prm['Atom2']==A2) & (self.angle_prm['Atom3']==A1)]
             kt.append(matching_row['Kt'].iloc[0])
             t0.append(matching_row['t0'].iloc[0])
         self.angle_k_t = {
             "angle": torch.tensor(angle).to(device),
             "kt": torch.tensor(kt).to(device),
             "t0": torch.tensor(t0).to(device)
+        }
+
+        # Build dihedral potential
+        self.dihedral_prm = pd.read_csv("parameter/ff_dihedral", sep='\s+', header=None, names=["Atom1", "Atom2", "Atom3", "Atom4", "Kd", "nd", "d0"])
+        dihedral, kd, nd, d0 = [], [], [], []
+        for x, y, z, t in atom_coordinates.dihedrals:
+            A1 = atom_coordinates.atom_types[x]
+            A2 = atom_coordinates.atom_types[y]
+            A3 = atom_coordinates.atom_types[z]
+            A4 = atom_coordinates.atom_types[t]
+            matching_row = self.dihedral_prm[(self.dihedral_prm['Atom1']==A1) & (self.dihedral_prm['Atom2']==A2) & (self.dihedral_prm['Atom3']==A3) & (self.dihedral_prm['Atom4']==A4)]
+            if len(matching_row) == 0:
+                matching_row = self.dihedral_prm[(self.dihedral_prm['Atom1']==A4) & (self.dihedral_prm['Atom2']==A3) & (self.dihedral_prm['Atom3']==A2) & (self.dihedral_prm['Atom4']==A1)]
+            for id , row in matching_row.iterrows():
+                dihedral.append([x, y, z, t])
+                kd.append(row['Kd'])
+                nd.append(row['nd'])
+                d0.append(row['d0'])
+        self.dihedral_k_n_d = {
+            "dihedral": torch.tensor(dihedral).to(device),
+            "kd": torch.tensor(kd).to(device),
+            "nd": torch.tensor(nd).to(device),
+            "d0": torch.tensor(d0).to(device)
         }
 
         # Build vanderwaals potential
@@ -154,7 +187,12 @@ class ForceField(nn.Module):
         for id, aa, A in zip(atom_coordinates.res_num, atom_coordinates.amino_acids, atom_coordinates.atom_names):
             aa_table = self.electro_prm[aa]
             if id == 0:
-                aa_table = pd.concat([aa_table, self.electro_prm["NTER"]])
+                if aa == "G":
+                    aa_table = pd.concat([aa_table, self.electro_prm["GLYP"]])
+                if aa == "P":
+                    aa_table = pd.concat([aa_table, self.electro_prm["PROP"]])
+                else:
+                    aa_table = pd.concat([aa_table, self.electro_prm["NTER"]])
                 aa_table = aa_table.drop_duplicates(subset='Atom', keep='last').reset_index(drop=True)
             if id == atom_coordinates.res_num[-1]:
                 aa_table = pd.concat([aa_table, self.electro_prm["CTER"]])
@@ -185,6 +223,7 @@ class AtomCoordinates(nn.Module):
     
     def init(self):
         self.coordinates = None
+        self.velocities = None
         self.pdb_table = None
 
         self.res_num = []
@@ -227,11 +266,24 @@ class AtomCoordinates(nn.Module):
             parsed_aa = self.parse_pdb(self.aa_coordinates[aa])
             if id == 0:
                 for i, d in enumerate(parsed_aa):
+                    if aa == "P" and d.get("AtomType") == "HA":
+                        new_H = [d.copy() for i in range(2)]
+                        new_a = ["H1", "H2"]
+                        new_x = [ 0.000, -0.461]
+                        new_y = [-0.980,  0.327]
+                        new_z = [ 0.000, -0.800]
+                        for j in range(2):
+                            new_H[j]['AtomType'] = new_a[j]
+                            new_H[j]['X'] = new_x[j]
+                            new_H[j]['Y'] = new_y[j]
+                            new_H[j]['Z'] = new_z[j]
+                        parsed_aa[i:i] = new_H
+                        break
                     if d.get("AtomType") == "H":
                         new_H = [d.copy() for i in range(3)]
                         new_a = ["H1", "H2", "H3"]
                         new_x = [ 0.000, -0.461, -0.461]
-                        new_y = [-0.980,  0.327, -0.327]
+                        new_y = [-0.980,  0.327,  0.327]
                         new_z = [ 0.000,  0.800, -0.800]
                         for j in range(3):
                             new_H[j]['AtomType'] = new_a[j]
@@ -262,6 +314,7 @@ class AtomCoordinates(nn.Module):
             parsed_data += parsed_aa
         self.pdb_table = pd.DataFrame(parsed_data)
         self.coordinates = nn.Parameter(torch.tensor(self.pdb_table[['X', 'Y', 'Z']].values))
+        self.velocities = torch.zeros_like(self.coordinates, device=device)
 
         # Build amino acid connectivity        
         nam_idx = {"-C":-1}
@@ -272,22 +325,28 @@ class AtomCoordinates(nn.Module):
                 continue
             lines = self.aa_connectivity[aa].split('\n')
             if id == 0:
-                pos = lines.index("ATOM  N     NH1")
-                lines[pos] = "ATOM  N     NH3"
-                pos = lines.index("ATOM  H     H")
-                lines[pos:pos+1] = ["ATOM  H1    HC", "ATOM  H2    HC", "ATOM  H3    HC"]
-                pos = lines.index("BOND  H     N")
-                lines[pos:pos+1] = ["BOND  H1    N", "BOND  H2    N", "BOND  H3    N"]
+                if aa == "P":
+                    pos = lines.index("ATOM  N    N")
+                    lines[pos] = "ATOM  N    NP"
+                    pos = lines.index("ATOM  HA   HB1")
+                    lines[pos:pos] = ["ATOM  H1   HC", "ATOM  H2   HC"]
+                    pos = lines.index("BOND  HA   CA")
+                    lines[pos:pos] = ["BOND  H1   N", "BOND  H2   N"]
+                else:
+                    pos = lines.index("ATOM  N    NH1")
+                    lines[pos] = "ATOM  N    NH3"
+                    pos = lines.index("ATOM  H    H")
+                    lines[pos:pos+1] = ["ATOM  H1   HC", "ATOM  H2   HC", "ATOM  H3   HC"]
+                    pos = lines.index("BOND  H    N")
+                    lines[pos:pos+1] = ["BOND  H1   N", "BOND  H2   N", "BOND  H3   N"]
             if id == len(protein_sequence)-1:
-                print(aa)
-                print(lines)
-                pos = lines.index("ATOM  C     C")
-                lines[pos] = "ATOM  C     CC"
-                pos = lines.index("ATOM  O     O")
-                lines[pos] = "ATOM  O     OC"
-                pos = lines.index("BOND  N     -C")
-                lines.insert(pos, "ATOM  OXT   OC")
-                lines.append("BOND  OXT   C")
+                pos = lines.index("ATOM  C    C")
+                lines[pos] = "ATOM  C    CC"
+                pos = lines.index("ATOM  O    O")
+                lines[pos] = "ATOM  O    OC"
+                pos = lines.index("BOND  N    -C")
+                lines.insert(pos, "ATOM  OXT  OC")
+                lines.append("BOND  OXT  C")
             for line in lines:
                 record = line.split()
                 if line.startswith("ATOM"):
@@ -298,8 +357,6 @@ class AtomCoordinates(nn.Module):
                     nam_idx[record[1]] = atom_idx
                     graph.append([])
                     atom_idx += 1
-                    if id == len(protein_sequence)-1 and self.atom_types[-1] == "O":
-                        self.atom_types[-1] = "OC"
                 if line.startswith("BOND"):
                     v, u = nam_idx[record[1]], nam_idx[record[2]]
                     if u != -1:
@@ -308,9 +365,10 @@ class AtomCoordinates(nn.Module):
                     self.dfs(graph, v, -1, [v])
             nam_idx["-C"] = nam_idx["C"]
     
-    def addNoise(self, vol=1):
-        noise = torch.randn_like(self.coordinates) * vol
-        self.coordinates.data.add_(noise)
+    def addNoise(self, vol=1, damp=0.99):
+        self.velocities += torch.randn_like(self.coordinates)
+        self.velocities *= damp
+        self.coordinates.data.add_(self.velocities * vol)
     
     def render(self):
         self.pdb_table['X'] = self.coordinates[:, 0].cpu().detach().numpy()
@@ -378,8 +436,8 @@ class MainApp:
         self.force_field.initialize(self.atom_coordinates, self.device)
         self.atom_coordinates.to(self.device)
         self.force_field.to(self.device)
-        # self.atom_optimizer = optim.Adam(self.atom_coordinates.parameters(), lr=0.1)
-        self.atom_optimizer = optim.SGD(self.atom_coordinates.parameters(), lr=0.01, momentum=0.9)
+        self.atom_optimizer = optim.Adam(self.atom_coordinates.parameters(), lr=0.5)
+        # self.atom_optimizer = optim.SGD(self.atom_coordinates.parameters(), lr=0.01, momentum=0.9)
         potential_energy = torch.sum(self.force_field(self.atom_coordinates()))
         potential_energy.backward()
     
@@ -393,7 +451,7 @@ class MainApp:
         potential_energy.backward()
         torch.nn.utils.clip_grad_norm_(self.atom_coordinates.coordinates, 100)
         self.atom_optimizer.step()
-        self.atom_coordinates.addNoise(vol=0.02)
+        self.atom_coordinates.addNoise(vol=0.005, damp=0.99)
 
 @app.route('/loadProtein', methods=['POST'])
 def loadProtein():
@@ -413,7 +471,8 @@ def showProtein():
 
 @app.route('/simulateProtein', methods=['GET'])
 def simulateProtein():
-    mainapp.protein_simulate()
+    for i in range(10):
+        mainapp.protein_simulate()
     protein_table = mainapp.protein_render()
     pdb_formatted_data = ""
     for id, row in protein_table.iterrows():
