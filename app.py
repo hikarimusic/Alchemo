@@ -19,12 +19,14 @@ class ForceField(nn.Module):
         self.bond_prm = None
         self.angle_prm = None
         self.dihedral_prm = None
+        self.improper_prm = None
         self.vanderwaals_prm = None
         self.electro_prm = None
 
         self.bond_k_b = {}
         self.angle_k_t = {}
         self.dihedral_k_n_d = {}
+        self.improper_k_p = {}
         self.vanderwaals_e_r = {}
         self.electro_kqq = {}
 
@@ -62,6 +64,20 @@ class ForceField(nn.Module):
         delta = delta * torch.sign((torch.cross(norm_abc, norm_bcd) * vec_bc).sum(dim=1))
         V_dihedral = torch.sum(kd * (1 + torch.cos(nd * delta - d0)))
 
+        # Improper
+        improper, kp, p0 = self.improper_k_p["improper"], self.improper_k_p["kp"], self.improper_k_p["p0"]
+        p0 = torch.deg2rad(p0)
+        vec_ab = x[improper[:, 1]] - x[improper[:, 0]]
+        vec_bc = x[improper[:, 2]] - x[improper[:, 1]]
+        vec_cd = x[improper[:, 3]] - x[improper[:, 2]]
+        norm_abc = torch.cross(vec_ab, vec_bc, dim=1)
+        norm_bcd = torch.cross(vec_bc, vec_cd, dim=1)
+        cos_p = (norm_abc * norm_bcd).sum(dim=1) / (torch.linalg.norm(norm_abc, dim=1) * torch.linalg.norm(norm_bcd, dim=1))
+        cos_p = torch.clamp(cos_p, -0.9999, 0.9999)
+        psi = torch.acos(cos_p)
+        psi = psi * torch.sign((torch.cross(norm_abc, norm_bcd) * vec_bc).sum(dim=1))
+        V_improper = torch.sum(kp * (psi - p0) ** 2)
+
         # Vanderwaals
         eps_ij, rmin_ij = self.vanderwaals_e_r["eps_ij"], self.vanderwaals_e_r["rmin_ij"]
         dist = torch.cdist(x, x) + torch.eye(x.size()[0]).to(x.device)
@@ -77,7 +93,7 @@ class ForceField(nn.Module):
         i_upper = torch.triu_indices(ele_potential.size(0), ele_potential.size(1), offset=1).to(x.device)
         V_electro = ele_potential[i_upper[0], i_upper[1]].sum()
 
-        V = V_bond + V_angle + V_dihedral + V_vanderwaals + V_electro
+        V = V_bond + V_angle + V_dihedral + V_improper + V_vanderwaals + V_electro
         return V
     
     def initialize(self, atom_coordinates, device):
@@ -129,6 +145,10 @@ class ForceField(nn.Module):
             matching_row = self.dihedral_prm[(self.dihedral_prm['Atom1']==A1) & (self.dihedral_prm['Atom2']==A2) & (self.dihedral_prm['Atom3']==A3) & (self.dihedral_prm['Atom4']==A4)]
             if len(matching_row) == 0:
                 matching_row = self.dihedral_prm[(self.dihedral_prm['Atom1']==A4) & (self.dihedral_prm['Atom2']==A3) & (self.dihedral_prm['Atom3']==A2) & (self.dihedral_prm['Atom4']==A1)]
+            if len(matching_row) == 0:
+                matching_row = self.dihedral_prm[(self.dihedral_prm['Atom1']=='X') & (self.dihedral_prm['Atom2']==A2) & (self.dihedral_prm['Atom3']==A3) & (self.dihedral_prm['Atom4']=='X')]
+            if len(matching_row) == 0:
+                matching_row = self.dihedral_prm[(self.dihedral_prm['Atom1']=='X') & (self.dihedral_prm['Atom2']==A3) & (self.dihedral_prm['Atom3']==A2) & (self.dihedral_prm['Atom4']=='X')]              
             for id , row in matching_row.iterrows():
                 dihedral.append([x, y, z, t])
                 kd.append(row['Kd'])
@@ -140,6 +160,33 @@ class ForceField(nn.Module):
             "nd": torch.tensor(nd).to(device),
             "d0": torch.tensor(d0).to(device)
         }
+
+        # Build improper potential
+        self.improper_prm = pd.read_csv("parameter/ff_improper", sep='\s+', header=None, names=["Atom1", "Atom2", "Atom3", "Atom4", "Kp", "p0"])
+        improper, kp, p0 = [], [], []
+        for x, y, z, t in atom_coordinates.impropers:
+            A1 = atom_coordinates.atom_types[x]
+            A2 = atom_coordinates.atom_types[y]
+            A3 = atom_coordinates.atom_types[z]
+            A4 = atom_coordinates.atom_types[t]
+            matching_row = self.improper_prm[(self.improper_prm['Atom1']==A1) & (self.improper_prm['Atom2']==A2) & (self.improper_prm['Atom3']==A3) & (self.improper_prm['Atom4']==A4)]
+            if len(matching_row) == 0:
+                matching_row = self.improper_prm[(self.improper_prm['Atom1']==A4) & (self.improper_prm['Atom2']==A3) & (self.improper_prm['Atom3']==A2) & (self.improper_prm['Atom4']==A1)]
+            if len(matching_row) == 0:
+                matching_row = self.improper_prm[(self.improper_prm['Atom1']==A1) & (self.improper_prm['Atom2']=='X') & (self.improper_prm['Atom3']=='X') & (self.improper_prm['Atom4']==A4)]
+            if len(matching_row) == 0:
+                matching_row = self.improper_prm[(self.improper_prm['Atom1']==A4) & (self.improper_prm['Atom2']=='X') & (self.improper_prm['Atom3']=='X') & (self.improper_prm['Atom4']==A1)]
+            for id , row in matching_row.iterrows():
+                improper.append([x, y, z, t])
+                kp.append(row['Kp'])
+                p0.append(row['p0'])
+        self.improper_k_p = {
+            "improper": torch.tensor(improper).to(device),
+            "kp": torch.tensor(kp).to(device),
+            "p0": torch.tensor(p0).to(device)
+        }
+
+        # print(self.improper_k_p)
 
         # Build vanderwaals potential
         self.vanderwaals_prm = pd.read_csv("parameter/ff_vanderwaals", sep='\s+', header=None, names=["Atom", "epsilon", "Rmin/2"])
@@ -233,6 +280,7 @@ class AtomCoordinates(nn.Module):
         self.bonds = []
         self.angles = []
         self.dihedrals = []
+        self.impropers = []
     
     def initialize(self, protein_sequence, device):
         self.init()
@@ -364,6 +412,13 @@ class AtomCoordinates(nn.Module):
                         graph[u].append(v)
                     self.dfs(graph, v, -1, [v])
             nam_idx["-C"] = nam_idx["C"]
+        for i in range(len(graph)):
+            if len(graph[i]) == 3:
+                self.impropers.append([i]+graph[i])
+        
+        # for im in self.impropers:
+        #     print(im[0], im[1], im[2], im[3])
+        #     print(self.atom_names[im[0]], self.atom_names[im[1]], self.atom_names[im[2]], self.atom_names[im[3]])
     
     def addNoise(self, vol=1, damp=0.99):
         self.velocities += torch.randn_like(self.coordinates)
@@ -451,7 +506,7 @@ class MainApp:
         potential_energy.backward()
         torch.nn.utils.clip_grad_norm_(self.atom_coordinates.coordinates, 100)
         self.atom_optimizer.step()
-        self.atom_coordinates.addNoise(vol=0.005, damp=0.99)
+        self.atom_coordinates.addNoise(vol=0.01, damp=0.99)
 
 @app.route('/loadProtein', methods=['POST'])
 def loadProtein():
