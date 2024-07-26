@@ -4,20 +4,19 @@ import torch.optim as optim
 import numpy as np 
 import pandas as pd 
 
-import logging
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 
 app = Flask(__name__)
 CORS(app)
 
-log = logging.getLogger('werkzeug')
-log.setLevel(logging.ERROR)
-
 class AtomCoordinates(nn.Module):
     def __init__(self):
         super(AtomCoordinates, self).__init__()
         self.init()
+    
+    def forward(self):
+        return self.coordinates
     
     def init(self):
         self.coordinates = None
@@ -32,9 +31,6 @@ class AtomCoordinates(nn.Module):
         self.angles = []
         self.dihedrals = []
         self.impropers = []
-
-    def forward(self):
-        return self.coordinates
     
     def initialize(self, protein_sequence, device):
         self.init()
@@ -57,7 +53,7 @@ class AtomCoordinates(nn.Module):
                     current_aa = line[1:].strip()
                     self.aa_connectivity[current_aa] = ''
                 else:
-                    self.aa_connectivity[current_aa] += line      
+                    self.aa_connectivity[current_aa] += line    
 
         # Build amino acid coordinates
         parsed_data = []
@@ -169,18 +165,7 @@ class AtomCoordinates(nn.Module):
         for i in range(len(graph)):
             if len(graph[i]) == 3:
                 self.impropers.append([i]+graph[i])
-
-    def update_positions(self, dt):
-        with torch.no_grad():
-            self.coordinates.add_(self.velocities * dt)
-
-    def update_velocities(self, acceleration, dt, vol=0.005, damp=0.99):
-        with torch.no_grad():
-            self.velocities.add_(acceleration * dt)
-            self.velocities += torch.randn_like(self.velocities) * vol
-            self.velocities.mul_(damp)
-            self.velocities = torch.tanh(self.velocities)
-
+        
     def addNoise(self, vol=1, damp=0.99):
         self.velocities += torch.randn_like(self.coordinates)
         self.velocities *= damp
@@ -246,7 +231,6 @@ class ForceField(nn.Module):
         self.init()
     
     def init(self):
-        self.mass_prm = None
         self.bond_prm = None
         self.angle_prm = None
         self.ureybradley_prm = None
@@ -255,7 +239,6 @@ class ForceField(nn.Module):
         self.vanderwaals_prm = None
         self.electro_prm = None
 
-        self.mass_m = {}
         self.bond_k_b = {}
         self.angle_k_t = {}
         self.ureybradley_k_s = {}
@@ -340,20 +323,9 @@ class ForceField(nn.Module):
     def initialize(self, atom_coordinates, device):
         self.init()
 
-        # Build atom mass
-        self.mass_prm = pd.read_csv("parameter/ff_mass", sep='\s+', header=None, names=["Atom", "m"])
-        m = []
-        for x in atom_coordinates.atom_types:
-            matching_row = self.mass_prm[(self.mass_prm['Atom']==x)]
-            m.append(matching_row['m'].iloc[0])
-        self.mass_m = {
-            "m": torch.tensor(m).to(device)
-        }
-
         # Build bond potential
         self.bond_prm = pd.read_csv("parameter/ff_bond", sep='\s+', header=None, names=["Atom1", "Atom2", "Kb", "b0"])
         bond, kb, b0 = atom_coordinates.bonds, [], []
-
         for x, y in atom_coordinates.bonds:
             A1 = atom_coordinates.atom_types[x]
             A2 = atom_coordinates.atom_types[y]
@@ -537,8 +509,6 @@ class MainApp:
         self.force_field = ForceField()
         self.device = 'cuda:0'
         self.step = 0
-        self.potential_energy = 0
-        self.potential_max = 0
 
     def protein_from_sequence(self, protein_sequence):
         self.atom_coordinates.initialize(protein_sequence, self.device)
@@ -553,38 +523,17 @@ class MainApp:
     def protein_render(self):
         self.atom_coordinates.render()
         return self.atom_coordinates.render()
-    
-    def gradient_descent(self):
+
+    def protein_simulate(self):
         self.atom_optimizer.zero_grad()
-        self.potential_energy = torch.sum(self.force_field(self.atom_coordinates()))
-        self.potential_energy.backward()
+        potential_energy = torch.sum(self.force_field(self.atom_coordinates()))
+        potential_energy.backward()
         torch.nn.utils.clip_grad_norm_(self.atom_coordinates.coordinates, 100)
         self.atom_optimizer.step()
         self.atom_coordinates.addNoise(vol=0.01, damp=0.99)
-    
-    def molecular_dynamics(self, dt=0.1):
-        self.atom_optimizer.zero_grad()
-        self.potential_energy = torch.sum(self.force_field(self.atom_coordinates()))
-        self.potential_energy.backward()
-        torch.nn.utils.clip_grad_norm_(self.atom_coordinates.coordinates, 100)
-        acceleration = -self.atom_coordinates.coordinates.grad / self.force_field.mass_m['m'].unsqueeze(1)
-        self.atom_coordinates.update_positions(0.5 * dt)
-        self.atom_coordinates.update_velocities(acceleration, dt)
-        self.atom_coordinates.update_positions(0.5 * dt)
-
-    def protein_simulate(self, GD=1e10):
-        if self.step <= GD or self.potential_energy > self.potential_max:
-            self.gradient_descent()
-            if self.step >= GD * 0.9:
-                self.potential_max += self.potential_energy
-            elif self.step == 200:
-                self.potential_max = self.potential_max / (GD * 0.1) * 5
-        else:
-            self.molecular_dynamics()
         self.step += 1
         if self.step % 100 == 0:
-            print(self.potential_energy.item())
-            print(torch.max(self.atom_coordinates.velocities))
+            print(potential_energy)
 
 @app.route('/loadProtein', methods=['POST'])
 def loadProtein():
@@ -604,7 +553,7 @@ def showProtein():
 
 @app.route('/simulateProtein', methods=['GET'])
 def simulateProtein():
-    for i in range(100):
+    for i in range(1):
         mainapp.protein_simulate()
     protein_table = mainapp.protein_render()
     pdb_formatted_data = ""
