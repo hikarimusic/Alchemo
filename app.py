@@ -36,7 +36,7 @@ class AtomCoordinates(nn.Module):
     def forward(self):
         return self.coordinates
     
-    def initialize(self, protein_sequence, device):
+    def initialize(self, protein_sequence, device, pdb_data=None):
         self.init()
 
         # Read amino acid data
@@ -60,6 +60,20 @@ class AtomCoordinates(nn.Module):
                     self.aa_connectivity[current_aa] += line      
 
         # Build amino acid coordinates
+        if pdb_data is not None:
+            aa_name_conv = {}
+            for aa in self.aa_connectivity:
+                parsed_aa = self.parse_pdb(self.aa_coordinates[aa])
+                aa_name_conv[parsed_aa[0]['Residue']] = aa
+            parsed_pdb = self.parse_pdb(pdb_data)
+            pdb_sequence = []
+            res_num = -1
+            for line in parsed_pdb:
+                if line['ResidueNum'] != res_num:
+                    protein_sequence += aa_name_conv[line['Residue']]
+                    pdb_sequence.append([])
+                    res_num = line['ResidueNum']
+                pdb_sequence[-1].append(line)
         parsed_data = []
         atom_num, res_num, current_pos = 0, 0, (0., 0., 0.)
         for id, aa in enumerate(protein_sequence):
@@ -95,6 +109,9 @@ class AtomCoordinates(nn.Module):
                         parsed_aa[i:i+1] = new_H
                         break
             res_num += 1
+            if pdb_data is not None:
+                atom_first = pdb_sequence[id][0]
+                current_pos = (atom_first['X'], atom_first['Y'], atom_first['Z'])
             for line in parsed_aa:
                 atom_num += 1
                 line["AtomNum"] = atom_num
@@ -113,6 +130,17 @@ class AtomCoordinates(nn.Module):
                 current_pos = (parsed_aa[-1]["X"], parsed_aa[-1]["Y"], parsed_aa[-1]["Z"])
                 parsed_aa.pop()
                 atom_num -= 1
+            if pdb_data is not None:
+                aa_num_conv = {}
+                for lid, line in enumerate(parsed_aa):
+                    aa_num_conv[line['AtomType']] = lid
+                parsed_pdb = pdb_sequence[id]
+                for line in parsed_pdb:
+                    atomtype = line['AtomType']
+                    if atomtype in aa_num_conv:
+                        parsed_aa[aa_num_conv[atomtype]]['X'] = line['X']
+                        parsed_aa[aa_num_conv[atomtype]]['Y'] = line['Y']
+                        parsed_aa[aa_num_conv[atomtype]]['Z'] = line['Z']
             parsed_data += parsed_aa
         self.pdb_table = pd.DataFrame(parsed_data)
         self.coordinates = nn.Parameter(torch.tensor(self.pdb_table[['X', 'Y', 'Z']].values).to(device))
@@ -264,7 +292,7 @@ class ForceField(nn.Module):
         self.vanderwaals_e_r = {}
         self.electro_kqq = {}
 
-    def forward(self, x):
+    def forward(self, x, central=False):
         # Bond
         bond, kb, b0 = self.bond_k_b["bond"], self.bond_k_b["kb"], self.bond_k_b["b0"]
         vec_s = x[bond[:, 0]]
@@ -334,7 +362,14 @@ class ForceField(nn.Module):
         i_upper = torch.triu_indices(ele_potential.size(0), ele_potential.size(1), offset=1).to(x.device)
         V_electro = ele_potential[i_upper[0], i_upper[1]].sum()
 
-        V = V_bond + V_angle + V_ureybradley + V_dihedral + V_improper + V_vanderwaals + V_electro
+        # Central
+        V_central = 0
+        if central == True:
+            dist = torch.sqrt(torch.sum((x - torch.mean(x, dim=0)) ** 2, dim=1))
+            cen_potential = 0.1 * dist ** 2
+            V_central = torch.sum(cen_potential)    
+
+        V = V_bond + V_angle + V_ureybradley + V_dihedral + V_improper + V_vanderwaals + V_electro + V_central
         return V
     
     def initialize(self, atom_coordinates, device):
@@ -540,27 +575,28 @@ class MainApp:
         self.potential_energy = 0
         self.potential_max = 0
 
-    def protein_from_sequence(self, protein_sequence):
-        self.atom_coordinates.initialize(protein_sequence, self.device)
+    def protein_from_sequence(self, protein_sequence, pdb_data=None):
+        self.atom_coordinates.initialize(protein_sequence, self.device, pdb_data)
         self.force_field.initialize(self.atom_coordinates, self.device)
         self.atom_coordinates.to(self.device)
         self.force_field.to(self.device)
-        self.atom_optimizer = optim.Adam(self.atom_coordinates.parameters(), lr=0.5)
+        self.atom_optimizer = optim.Adam(self.atom_coordinates.parameters(), lr=0.3)
+        # self.atom_optimizer = optim.NAdam(self.atom_coordinates.parameters(), lr=0.1)
         # self.atom_optimizer = optim.SGD(self.atom_coordinates.parameters(), lr=0.01, momentum=0.9)
         potential_energy = torch.sum(self.force_field(self.atom_coordinates()))
         potential_energy.backward()
-    
+
     def protein_render(self):
         self.atom_coordinates.render()
         return self.atom_coordinates.render()
     
-    def gradient_descent(self):
+    def gradient_descent(self, central=False):
         self.atom_optimizer.zero_grad()
-        self.potential_energy = torch.sum(self.force_field(self.atom_coordinates()))
+        self.potential_energy = torch.sum(self.force_field(self.atom_coordinates(), central))
         self.potential_energy.backward()
         torch.nn.utils.clip_grad_norm_(self.atom_coordinates.coordinates, 100)
         self.atom_optimizer.step()
-        self.atom_coordinates.addNoise(vol=0.01, damp=0.99)
+        self.atom_coordinates.addNoise(vol=0.003, damp=0.99)
     
     def molecular_dynamics(self, dt=0.1):
         self.atom_optimizer.zero_grad()
@@ -572,25 +608,27 @@ class MainApp:
         self.atom_coordinates.update_velocities(acceleration, dt)
         self.atom_coordinates.update_positions(0.5 * dt)
 
-    def protein_simulate(self, GD=1e10):
-        if self.step <= GD or self.potential_energy > self.potential_max:
-            self.gradient_descent()
-            if self.step >= GD * 0.9:
-                self.potential_max += self.potential_energy
-            elif self.step == 200:
-                self.potential_max = self.potential_max / (GD * 0.1) * 5
+    def protein_simulate(self):
+        if self.step < 1000:
+            self.gradient_descent(True)
         else:
-            self.molecular_dynamics()
+            self.gradient_descent()
         self.step += 1
         if self.step % 100 == 0:
             print(self.potential_energy.item())
-            print(torch.max(self.atom_coordinates.velocities))
 
 @app.route('/loadProtein', methods=['POST'])
 def loadProtein():
     data = request.json
     protein_sequence = data['sequence']
     mainapp.protein_from_sequence(protein_sequence)
+    return jsonify({"message": "Protein structure generated"})
+
+@app.route('/loadPdbId', methods=['POST'])
+def loadPdbId():
+    data = request.json
+    pdb_data = data['pdbData']
+    mainapp.protein_from_sequence("", pdb_data)
     return jsonify({"message": "Protein structure generated"})
 
 @app.route('/showProtein', methods=['GET'])

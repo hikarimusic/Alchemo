@@ -16,6 +16,32 @@ function loadProtein() {
     .catch(error => console.error('Error:', error));
 }
 
+// Load PdbId
+function loadPdbId() {
+    var pdbId = document.getElementById("idInput").value;
+    var pdbUrl = `https://files.rcsb.org/download/${pdbId}.pdb`;
+    fetch(pdbUrl)
+    .then(response => {
+        if (!response.ok) {
+            throw new Error('Network response was not ok ' + response.statusText);
+        }
+        return response.text();
+    })
+    .then(pdbData => {
+        fetch('http://localhost:5000/loadPdbId', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ pdbData: pdbData })
+        })
+        .then(response => response.json())
+        .then(() => showProtein())
+        .catch(error => console.error('Error:', error));
+    })
+    .catch(error => console.error('Error fetching PDB file:', error));
+}
+
 // Apply Style
 function applyStyle(moleculeType) {
     var styleSelect = document.getElementById("styleSelect");
@@ -67,6 +93,8 @@ function simulateProtein() {
 // Event Listeners
 document.getElementById("loadProteinButton").addEventListener("click", loadProtein);
 
+document.getElementById("loadPdbIdButton").addEventListener("click", loadPdbId)
+
 document.getElementById("styleSelect").addEventListener("change", function() {
     var styleSelect = this;
     var selectedStyle = styleSelect.options[styleSelect.selectedIndex].value;
@@ -99,36 +127,6 @@ document.getElementById("stopButton").addEventListener("click", function() {
 
 
 
-
-function loadFromPdbId(pdbId) {
-    viewer.clear();
-
-    var pdbUrl = `https://files.rcsb.org/download/${pdbId}.pdb`;
-    fetch(pdbUrl)
-        .then(response => {
-            if (!response.ok) {
-                throw new Error('Network response was not ok');
-            }
-            return response.text();
-        })
-        .then(data => {
-            pdbData = data;
-            viewer.addModel(pdbData, "pdb");
-            applyStyle('protein');
-            viewer.zoomTo();
-            viewer.render();
-        })
-        .catch(error => {
-            console.error('There has been a problem with your fetch operation:', error);
-            alert("Error loading PDB ID.");
-        });
-}
-
-document.getElementById("loadPdbIdButton").addEventListener("click", function() {
-    // var pdbId = document.getElementById("pdbIdInput").value;
-    var pdbId = document.getElementById("idInput").value;
-    loadFromPdbId(pdbId);
-});
 
 
 
