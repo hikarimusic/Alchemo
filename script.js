@@ -48,11 +48,14 @@ function applyStyle(moleculeType) {
     var selectedStyle = styleSelect.options[styleSelect.selectedIndex].value;
 
     if (moleculeType === "protein" && selectedStyle === "cartoon") {
-        viewer.setStyle({}, { cartoon: { color: 'spectrum' } });
+        viewer.setStyle({ chain: 'A' }, { cartoon: { color: 'spectrum' } });
+        viewer.setStyle({ chain: 'B' }, { sphere: { radius: 0.3, color: 'aqua' } });
     } else if (moleculeType === "compound" && selectedStyle === "cartoon") {
-        viewer.setStyle({}, { stick: {} });
+        viewer.setStyle({ chain: 'A' }, { stick: {} });
+        viewer.setStyle({ chain: 'B' }, { sphere: { radius: 0.3, color: 'aqua' } });
     } else {
-        viewer.setStyle({}, { [selectedStyle]: {} });
+        viewer.setStyle({ chain: 'A' }, { [selectedStyle]: {} });
+        viewer.setStyle({ chain: 'B' }, { sphere: { radius: 0.3, color: 'aqua' } });
     }
 }
 

@@ -32,6 +32,9 @@ class AtomCoordinates(nn.Module):
         self.angles = []
         self.dihedrals = []
         self.impropers = []
+        
+        self.protein_sequence = ""
+        self.water_num = 100
 
     def forward(self):
         return self.coordinates
@@ -75,7 +78,7 @@ class AtomCoordinates(nn.Module):
                     res_num = line['ResidueNum']
                 pdb_sequence[-1].append(line)
         parsed_data = []
-        atom_num, res_num, current_pos = 0, 0, (0., 0., 0.)
+        atom_num, res_num, current_pos, pos_list = 0, 0, (0., 0., 0.), []
         for id, aa in enumerate(protein_sequence):
             if aa not in self.aa_coordinates:
                 continue
@@ -141,10 +144,26 @@ class AtomCoordinates(nn.Module):
                         parsed_aa[aa_num_conv[atomtype]]['X'] = line['X']
                         parsed_aa[aa_num_conv[atomtype]]['Y'] = line['Y']
                         parsed_aa[aa_num_conv[atomtype]]['Z'] = line['Z']
+            for line in parsed_aa:
+                pos_list.append([line["X"], line["Y"], line["Z"]])
+            parsed_data += parsed_aa
+        current_pos = torch.mean(torch.tensor(pos_list), dim=0)
+        for i in range(self.water_num):
+            parsed_aa = self.parse_pdb(self.aa_coordinates['H2O'])
+            res_num += 1
+            for line in parsed_aa:
+                atom_num += 1
+                line["AtomNum"] = atom_num
+                line["ResidueNum"] = res_num
+                pos_tmp = current_pos + 20 * (2 * torch.rand(3) - 1)
+                line["X"] += pos_tmp[0].item()
+                line["Y"] += pos_tmp[1].item()
+                line["Z"] += pos_tmp[2].item()
             parsed_data += parsed_aa
         self.pdb_table = pd.DataFrame(parsed_data)
         self.coordinates = nn.Parameter(torch.tensor(self.pdb_table[['X', 'Y', 'Z']].values).to(device))
         self.velocities = torch.zeros_like(self.coordinates, device=device)
+        self.protein_sequence = protein_sequence
 
         # Build amino acid connectivity        
         nam_idx = {"-C":-1}
@@ -197,6 +216,25 @@ class AtomCoordinates(nn.Module):
         for i in range(len(graph)):
             if len(graph[i]) == 3:
                 self.impropers.append([i]+graph[i])
+        for id in range(self.water_num):
+            aa = "H2O"
+            lines = self.aa_connectivity[aa].split('\n')
+            for line in lines:
+                record = line.split()
+                if line.startswith("ATOM"):
+                    self.res_num.append(id)
+                    self.amino_acids.append(aa)
+                    self.atom_names.append(record[1])
+                    self.atom_types.append(record[2])
+                    nam_idx[record[1]] = atom_idx
+                    graph.append([])
+                    atom_idx += 1
+                if line.startswith("BOND"):
+                    v, u = nam_idx[record[1]], nam_idx[record[2]]
+                    if u != -1:
+                        graph[v].append(u)
+                        graph[u].append(v)
+                    self.dfs(graph, v, -1, [v])
 
     def update_positions(self, dt):
         with torch.no_grad():
@@ -292,7 +330,7 @@ class ForceField(nn.Module):
         self.vanderwaals_e_r = {}
         self.electro_kqq = {}
 
-    def forward(self, x, central=False):
+    def forward(self, x):
         # Bond
         bond, kb, b0 = self.bond_k_b["bond"], self.bond_k_b["kb"], self.bond_k_b["b0"]
         vec_s = x[bond[:, 0]]
@@ -362,14 +400,12 @@ class ForceField(nn.Module):
         i_upper = torch.triu_indices(ele_potential.size(0), ele_potential.size(1), offset=1).to(x.device)
         V_electro = ele_potential[i_upper[0], i_upper[1]].sum()
 
-        # Central
-        V_central = 0
-        if central == True:
-            dist = torch.sqrt(torch.sum((x - torch.mean(x, dim=0)) ** 2, dim=1))
-            cen_potential = 0.1 * dist ** 2
-            V_central = torch.sum(cen_potential)    
+        # Box
+        dist = torch.sqrt(torch.sum((x - torch.mean(x, dim=0)) ** 2, dim=1))
+        box_potential = 0.1 * (dist ** 2)
+        V_box = torch.sum(box_potential[dist>20])
 
-        V = V_bond + V_angle + V_ureybradley + V_dihedral + V_improper + V_vanderwaals + V_electro + V_central
+        V = V_bond + V_angle + V_ureybradley + V_dihedral + V_improper + V_vanderwaals + V_electro + V_box
         return V
     
     def initialize(self, atom_coordinates, device):
@@ -546,7 +582,7 @@ class ForceField(nn.Module):
                 else:
                     aa_table = pd.concat([aa_table, self.electro_prm["NTER"]])
                 aa_table = aa_table.drop_duplicates(subset='Atom', keep='last').reset_index(drop=True)
-            if id == atom_coordinates.res_num[-1]:
+            if id == len(atom_coordinates.protein_sequence)-1:
                 aa_table = pd.concat([aa_table, self.electro_prm["CTER"]])
                 aa_table = aa_table.drop_duplicates(subset='Atom', keep='last').reset_index(drop=True)
             matching_row = aa_table[(aa_table['Atom']==A)]
@@ -590,9 +626,9 @@ class MainApp:
         self.atom_coordinates.render()
         return self.atom_coordinates.render()
     
-    def gradient_descent(self, central=False):
+    def gradient_descent(self):
         self.atom_optimizer.zero_grad()
-        self.potential_energy = torch.sum(self.force_field(self.atom_coordinates(), central))
+        self.potential_energy = torch.sum(self.force_field(self.atom_coordinates()))
         self.potential_energy.backward()
         torch.nn.utils.clip_grad_norm_(self.atom_coordinates.coordinates, 100)
         self.atom_optimizer.step()
@@ -609,10 +645,7 @@ class MainApp:
         self.atom_coordinates.update_positions(0.5 * dt)
 
     def protein_simulate(self):
-        if self.step < 1000:
-            self.gradient_descent(True)
-        else:
-            self.gradient_descent()
+        self.gradient_descent()
         self.step += 1
         if self.step % 100 == 0:
             print(self.potential_energy.item())
