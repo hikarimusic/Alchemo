@@ -5,7 +5,7 @@ Drug discovery based on computational physics
 Backend
 ```
 source .alchemo/bin/activate
-cd Alchemo
+cd Alchemo/src
 ```
 ```
 python3 app.py
