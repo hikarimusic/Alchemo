@@ -22,7 +22,8 @@ class AtomCoordinates(nn.Module):
         self.impropers = []
         
         self.protein_sequence = ""
-        self.water_num = 100
+        self.water_num = 0
+        self.box_size = 20
 
     def forward(self):
         return self.coordinates
@@ -143,7 +144,7 @@ class AtomCoordinates(nn.Module):
                 atom_num += 1
                 line["AtomNum"] = atom_num
                 line["ResidueNum"] = res_num
-                pos_tmp = current_pos + 20 * (2 * torch.rand(3) - 1)
+                pos_tmp = current_pos + self.box_size * (2 * torch.rand(3) - 1)
                 line["X"] += pos_tmp[0].item()
                 line["Y"] += pos_tmp[1].item()
                 line["Z"] += pos_tmp[2].item()

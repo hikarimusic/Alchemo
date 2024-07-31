@@ -75,7 +75,8 @@ function showProtein() {
 
 // Simulate Portein
 function simulateProtein() {
-    fetch('http://localhost:5000/simulateProtein')
+    var speed = document.getElementById("speedSelect").value;
+    fetch(`http://localhost:5000/simulateProtein?speed=${speed}`)
     .then(response => response.json())
     .then(data => {
         viewer.clear();

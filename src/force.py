@@ -99,7 +99,7 @@ class ForceField(nn.Module):
         # Box
         dist = torch.sqrt(torch.sum((x - torch.mean(x, dim=0)) ** 2, dim=1))
         box_potential = 0.1 * (dist ** 2)
-        V_box = torch.sum(box_potential[dist>20])
+        V_box = torch.sum(box_potential[dist>self.box_size])
 
         V = V_bond + V_angle + V_ureybradley + V_dihedral + V_improper + V_vanderwaals + V_electro + V_box
         return V
@@ -296,3 +296,6 @@ class ForceField(nn.Module):
         self.electro_kqq = {
             "kqq_ij": kqq_ij.to(device)
         }
+
+        # Other
+        self.box_size = atom_coordinates.box_size

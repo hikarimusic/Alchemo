@@ -23,7 +23,7 @@
         </div> -->
 
         <div class="control-group">
-            <label for="sequenceInput">Enter Protein/Molecule:</label>
+            <label for="sequenceInput">Enter Protein/Molecule Sequence:</label>
             <textarea id="sequenceInput" rows="4" cols="50" style="overflow-y: scroll;" placeholder="e.g., CYFQNCPRG / CC(=O)NC1=CC=C(C=C1)O"></textarea>
             <div class="button-group">
                 <button id="loadProteinButton">Load Protein</button>
@@ -44,7 +44,7 @@
         </div> -->
 
         <div class="control-group">
-            <label for="idInput">Enter PDB or PubChem ID:</label>
+            <label for="idInput">Enter PDB/PubChem ID:</label>
             <input type="text" id="idInput" placeholder="e.g., 3QRK / 5291">
             <div class="button-group">
                 <button id="loadPdbIdButton">Load PDB ID</button>
@@ -53,12 +53,25 @@
         </div>
 
         <div class="control-group">
-            <input type="file" id="fileInput" accept=".pdb">
-            <button id="loadFileButton">Load Local PDB File</button>
+            <label>Open Protein/Molecule File:</label>
+            <input type="file" id="fileInput" accept=".pdb,.sdf">
+            <div class="button-group">
+                <button id="loadPdbFileButton">Load .pdb</button>
+                <button id="loadSdfFileButton">Load .sdf</button>
+            </div>
         </div>
 
         <div class="control-group">
-            <label for="styleSelect">Select Style:</label>
+            <label>Set Method/Speed:</label>
+            <select id="methodSelect">
+                <option value="rigid">Rigid</option>
+                <option value="flexible">Flexible</option>
+            </select>
+            <input type="number" id="speedSelect" min="1" value="10">
+        </div>
+
+        <div class="control-group">
+            <label>Start Simulation:</label>
             <select id="styleSelect">
                 <option value="cartoon">Cartoon</option>
                 <option value="stick">Stick</option>
@@ -69,7 +82,7 @@
                 <button id="stopButton">Stop</button>
             </div>
         </div>
-        
+
     </div>
 
     <script type="text/javascript" src="https://3dmol.csb.pitt.edu/build/3Dmol.js"></script>

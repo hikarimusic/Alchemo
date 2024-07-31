@@ -47,7 +47,7 @@ class MainApp:
         self.potential_energy.backward()
         torch.nn.utils.clip_grad_norm_(self.atom_coordinates.coordinates, 100)
         self.atom_optimizer.step()
-        self.atom_coordinates.addNoise(vol=0.003, damp=0.99)
+        self.atom_coordinates.addNoise(vol=0.005, damp=0.99)
     
     def molecular_dynamics(self, dt=0.1):
         self.atom_optimizer.zero_grad()
@@ -90,7 +90,8 @@ def showProtein():
 
 @app.route('/simulateProtein', methods=['GET'])
 def simulateProtein():
-    for i in range(100):
+    speed = int(request.args.get('speed', 1))
+    for i in range(speed):
         mainapp.protein_simulate()
     protein_table = mainapp.protein_render()
     pdb_formatted_data = ""

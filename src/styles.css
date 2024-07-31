@@ -108,6 +108,20 @@ input[type="file"]:hover::before {
     border-color: #0078D7; /* Blue border on hover */
 }
 
+input[type="number"] {
+    width: 100%; /* Full width for consistency */
+    padding: 12px; /* Uniform padding */
+    margin: 5px 0; /* Consistent margin */
+    border-radius: 6px; /* Rounded corners */
+    font-size: 16px; /* Standard font size */
+    box-sizing: border-box; /* Include padding in the width calculation */
+    border: 1px solid #333; /* Subtle border */
+    background-color: #3A3A3A; /* Gray background */
+    color: white; /* White text color */
+    cursor: pointer;
+    transition: all 0.3s ease; /* Smooth transition for hover effects */
+}
+
 /* Label styling for consistency */
 label {
     color: #cfcfcf; /* Lighter text for better contrast */
