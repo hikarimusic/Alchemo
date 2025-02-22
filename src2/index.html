@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Drug Docking Program</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <style>
+        /* Reset and base styles */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            display: flex;
+            height: 100vh;
+            background: #1a1a1a;
+            font-family: 'Inter', sans-serif;
+            color: #ffffff;
+        }
+
+        /* Main container styles */
+        .main-container {
+            display: flex;
+            width: 100%;
+            height: 100%;
+        }
+
+        /* Viewer styles */
+        .viewer-container {
+            flex: 1;
+            background: #121212;
+            position: relative;
+        }
+
+        #viewer {
+            width: 100%;
+            height: 100%;
+            border: none;
+        }
+
+        /* Control panel styles */
+        .control-panel {
+            width: 320px;
+            background: #242424;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            border-left: 1px solid #333;
+            overflow-y: auto;
+        }
+
+        /* Panel section styles */
+        .panel-section {
+            background: #2a2a2a;
+            border-radius: 8px;
+            padding: 16px;
+            border: 1px solid #333;
+        }
+
+        .panel-section h2 {
+            font-size: 14px;
+            font-weight: 500;
+            color: #fff;
+            margin-bottom: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        /* Form control styles */
+        .form-control {
+            margin-bottom: 12px;
+        }
+
+        .form-control:last-child {
+            margin-bottom: 0;
+        }
+
+        .form-control label {
+            display: block;
+            font-size: 13px;
+            color: #bbb;
+            margin-bottom: 6px;
+        }
+
+        .form-control input[type="text"],
+        .form-control select {
+            width: 100%;
+            padding: 8px 12px;
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 6px;
+            color: #fff;
+            font-size: 13px;
+        }
+
+        .file-input-container {
+            position: relative;
+            width: 100%;
+        }
+
+        .file-input-container input[type="text"] {
+            width: 100%;
+            padding-right: 100px;
+        }
+
+        .file-input-container input[type="file"] {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            top: 0;
+            left: 0;
+            opacity: 0;
+            cursor: pointer;
+        }
+
+        /* Button styles */
+        .button {
+            background: #2563eb;
+            color: white;
+            border: none;
+            padding: 10px 16px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background-color 0.2s;
+            width: 100%;
+        }
+
+        .button:hover {
+            background: #1d4ed8;
+        }
+
+        .button.secondary {
+            background: #4b5563;
+        }
+
+        .button.secondary:hover {
+            background: #374151;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 8px;
+        }
+
+        .button-group .button {
+            flex: 1;
+        }
+
+        /* Select styling */
+        select {
+            appearance: none;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none'%3E%3Cpath d='M2.5 4.5L6 8L9.5 4.5' stroke='%23888' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 12px center;
+            padding-right: 36px;
+        }
+
+        select:focus {
+            outline: none;
+            border-color: #2563eb;
+        }
+    </style>
+</head>
+<body>
+    <div class="main-container">
+        <div class="viewer-container">
+            <div id="viewer"></div>
+        </div>
+        
+        <div class="control-panel">
+            <!-- Protein Loading Panel -->
+            <div class="panel-section">
+                <h2>Load Protein</h2>
+                <div class="form-control">
+                    <label>Selected File</label>
+                    <div class="file-input-container">
+                        <input type="text" id="pdbFileName" placeholder="No file selected" readonly>
+                        <input type="file" accept=".pdb" id="pdbFileInput">
+                    </div>
+                </div>
+                <button class="button" id="loadProteinButton">Load Protein</button>
+            </div>
+
+            <!-- Drug Loading Panel -->
+            <div class="panel-section">
+                <h2>Load Drug</h2>
+                <div class="form-control">
+                    <label>SMILE Sequence</label>
+                    <input type="text" placeholder="Enter SMILE sequence" id="smileInput">
+                </div>
+                <button class="button" id="loadDrugButton">Load Drug</button>
+            </div>
+
+            <!-- Display Settings Panel -->
+            <div class="panel-section">
+                <h2>Display Settings</h2>
+                <div class="form-control">
+                    <label>Visualization Style</label>
+                    <select id="styleSelect">
+                        <option value="cartoon">Cartoon</option>
+                        <option value="stick">Stick</option>
+                        <option value="sphere">Sphere</option>
+                        <option value="line">Line</option>
+                    </select>
+                </div>
+                <div class="button-group">
+                    <button class="button" id="startButton">Start</button>
+                    <button class="button secondary" id="stopButton">Stop</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Load required scripts -->
+    <script src="https://3dmol.csb.pitt.edu/build/3Dmol.js"></script>
+    <script src="script.js"></script>
+</body>
+</html>

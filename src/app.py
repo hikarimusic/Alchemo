@@ -25,6 +25,7 @@ class MainApp:
         self.step = 0
         self.potential_energy = 0
         self.potential_max = 0
+        print("Cuda Available:", torch.cuda.is_available())
 
     def protein_from_sequence(self, protein_sequence, pdb_data=None):
         self.atom_coordinates.initialize(protein_sequence, self.device, pdb_data)
@@ -67,6 +68,7 @@ class MainApp:
 
 @app.route('/loadProtein', methods=['POST'])
 def loadProtein():
+    print("Load Protein")
     data = request.json
     protein_sequence = data['sequence']
     mainapp.protein_from_sequence(protein_sequence)
@@ -74,6 +76,7 @@ def loadProtein():
 
 @app.route('/loadPdbId', methods=['POST'])
 def loadPdbId():
+    print("Load PDB ID")
     data = request.json
     pdb_data = data['pdbData']
     mainapp.protein_from_sequence("", pdb_data)
