@@ -1,7 +1,7 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from rdkit import Chem
-from rdkit.Chem import AllChem
+from rdkit.Chem import AllChem, BRICS
 import traceback
 import torch
 import torch.nn as nn
@@ -62,56 +62,136 @@ class AtomTyper:
         return 'C_H'  # Default to carbon if unknown
 
 class DrugConformation(nn.Module):
-    def __init__(self, mol, n_conformers=100):
+    def __init__(self, mol, protein_coords, n_conformers=100, surface_distance=0.0):
         super().__init__()
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        logger.info(f"DrugConformation using device: {self.device}")
+        self.to(self.device)
         self.mol = mol
         self.n_conformers = n_conformers
+        self.protein_coords = torch.tensor(protein_coords, device=self.device, dtype=torch.float32)
         
-        # Find rotatable bonds
-        self.rotatable_bonds = self._find_rotatable_bonds()
+        # Find rotatable bonds and their associated branch atoms
+        self.rotatable_bonds, self.branch_atoms = self._find_rotatable_bonds_and_branches()
         n_rotatable = len(self.rotatable_bonds)
         
-        # Parameters: [n_conformers, n_params]
+        # Initialize parameters near protein surface
         n_params = 6 + n_rotatable  # 3 for position, 3 for orientation, rest for rotatable bonds
+        initial_params = self._initialize_near_surface(surface_distance)
         
-        # Initialize parameters
-        self.conf_params = nn.Parameter(torch.randn(n_conformers, n_params))
+        # Parameters: [n_conformers, n_params]
+        self.conf_params = nn.Parameter(initial_params)
         
-        # Get atom types
+        # Get atom types and VDW radii
         self.atom_types = [AtomTyper.get_atom_type(atom) for atom in mol.GetAtoms()]
-        self.vdw_radii = torch.tensor([AtomTyper.VDW_RADII[atype] for atype in self.atom_types])
-        
-    def _find_rotatable_bonds(self) -> List[Tuple[int, int]]:
-        rotatable = []
-        for bond in self.mol.GetBonds():
-            if bond.IsRotatable():
-                rotatable.append((bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()))
-        return rotatable
+        self.vdw_radii = torch.tensor(
+            [AtomTyper.VDW_RADII[atype] for atype in self.atom_types],
+            device=self.device,
+            dtype=torch.float32
+        )
 
-    def _compute_atom_coordinates(self) -> torch.Tensor:
-        device = self.conf_params.device
-        conf = self.mol.GetConformer()
-        coords = torch.tensor(conf.GetPositions(), device=device)
-        coords = coords.unsqueeze(0).repeat(self.n_conformers, 1, 1)
+    def _initialize_near_surface(self, surface_distance: float) -> torch.Tensor:
+        """Initialize conformers near the protein surface."""
+        n_rotatable = len(self.rotatable_bonds)
+        n_params = 6 + n_rotatable
         
-        # Apply transformations in parallel
-        # Translation
-        translations = self.conf_params[:, :3].unsqueeze(1)
-        coords = coords + translations
+        # Calculate protein center and approximate radius
+        protein_center = self.protein_coords.mean(dim=0)
+        protein_radius = torch.max(torch.norm(self.protein_coords - protein_center, dim=1))
         
-        # Rotation (using quaternions)
-        angles = self.conf_params[:, 3:6]
-        quats = self._euler_to_quaternion(angles)
-        coords = self._rotate_points_by_quaternions(coords, quats)
+        # Generate random points on a sphere around the protein
+        theta = torch.rand(self.n_conformers, device=self.device) * 2 * np.pi
+        phi = torch.acos(2 * torch.rand(self.n_conformers, device=self.device) - 1)
+        r = protein_radius + surface_distance  # Place ligands at surface_distance from protein radius
         
-        # Rotatable bonds
-        for bond_idx, (atom1, atom2) in enumerate(self.rotatable_bonds):
-            angles = self.conf_params[:, 6 + bond_idx]
-            coords = self._rotate_branches_parallel(coords, atom1, atom2, angles)
+        # Convert spherical to cartesian coordinates
         
-        return coords
+        # r = 0 # set to 0 for debug
+
+        x = r * torch.sin(phi) * torch.cos(theta)
+        y = r * torch.sin(phi) * torch.sin(theta)
+        z = r * torch.cos(phi)
+        positions = torch.stack([x, y, z], dim=1) + protein_center
+        
+        # Random orientations (euler angles)
+        orientations = torch.rand(self.n_conformers, 3, device=self.device) * 2 * np.pi
+        
+        # orientations *= 0 # set to 0 for debug
+
+        # Random rotatable bond angles
+        rot_angles = torch.rand(self.n_conformers, n_rotatable, device=self.device) * 2 * np.pi
+        
+        # Combine all parameters
+        params = torch.cat([positions, orientations, rot_angles], dim=1)
+        
+        return params.to(torch.float32)
+
+    def _find_rotatable_bonds_and_branches(self) -> Tuple[List[Tuple[int, int]], List[List[int]]]:
+        """Find rotatable bonds and precalculate their branch atoms."""
+        rotatable = []
+        branches = []
+        
+        for bond in self.mol.GetBonds():
+            # Skip if bond is in ring
+            if bond.IsInRing():
+                continue
+            
+            # Get atoms of the bond
+            begin_atom = bond.GetBeginAtom()
+            end_atom = bond.GetEndAtom()
+            begin_idx = begin_atom.GetIdx()
+            end_idx = end_atom.GetIdx()
+            
+            # Skip if either atom is a hydrogen
+            if begin_atom.GetAtomicNum() == 1 or end_atom.GetAtomicNum() == 1:
+                continue
+                
+            # Skip if it's a double, triple, or aromatic bond
+            if bond.GetBondType() != Chem.rdchem.BondType.SINGLE:
+                continue
+                
+            # Skip if both atoms have less than 2 heavy atom neighbors
+            if (len([n for n in begin_atom.GetNeighbors() if n.GetAtomicNum() != 1]) < 2 or
+                len([n for n in end_atom.GetNeighbors() if n.GetAtomicNum() != 1]) < 2):
+                continue
+            
+            # Find branch atoms for this bond
+            branch_atoms = self._get_branch_atoms(end_idx, begin_idx)
+            
+            # Only add the bond if we found a valid branch
+            if branch_atoms:
+                rotatable.append((begin_idx, end_idx))
+                branches.append(branch_atoms)
+            
+        return rotatable, branches
+
+    def _get_branch_atoms(self, atom2: int, atom1: int) -> List[int]:
+        """Find all atoms on the atom2 side of the rotatable bond between atom1 and atom2."""
+        visited = set()
+        branch_atoms = set()
+        
+        def dfs(atom_idx: int) -> None:
+            if atom_idx in visited:
+                return
+            
+            visited.add(atom_idx)
+            if atom_idx != atom1:  # Don't include the pivot atom
+                branch_atoms.add(atom_idx)
+                
+            # Get neighbors of current atom
+            atom = self.mol.GetAtomWithIdx(atom_idx)
+            for neighbor in atom.GetNeighbors():
+                neighbor_idx = neighbor.GetIdx()
+                if neighbor_idx != atom1 and neighbor_idx not in visited:
+                    dfs(neighbor_idx)
+        
+        # Start DFS from atom2
+        dfs(atom2)
+        
+        return sorted(list(branch_atoms))
 
     def _euler_to_quaternion(self, angles: torch.Tensor) -> torch.Tensor:
+        """Convert Euler angles to quaternions."""
         x, y, z = angles.chunk(3, dim=1)
         cx, sx = torch.cos(x/2), torch.sin(x/2)
         cy, sy = torch.cos(y/2), torch.sin(y/2)
@@ -152,13 +232,33 @@ class DrugConformation(nn.Module):
         # Apply rotation to all points simultaneously
         return torch.bmm(points, R.transpose(1, 2))
 
-    def _rotate_branches_parallel(self, coords: torch.Tensor, atom1: int, atom2: int, angles: torch.Tensor) -> torch.Tensor:
-        """Rotate branches around bonds for all conformers in parallel."""
-        # coords: [n_conf, n_atoms, 3]
-        # angles: [n_conf]
-        
-        # Get branch atoms
-        branch_atoms = self._get_branch_atoms(atom2, atom1)
+    def _compute_atom_coordinates(self) -> torch.Tensor:
+        """Compute 3D coordinates for all atoms in all conformers."""
+        device = self.conf_params.device
+        conf = self.mol.GetConformer()
+        # Convert to float32 explicitly when creating tensor
+        coords = torch.tensor(conf.GetPositions(), device=device, dtype=torch.float32)
+        coords = coords.unsqueeze(0).repeat(self.n_conformers, 1, 1)
+                        
+        # Rotatable bonds - use precalculated branch atoms
+        for bond_idx, ((atom1, atom2), branch_atoms) in enumerate(zip(self.rotatable_bonds, self.branch_atoms)):
+            angles = self.conf_params[:, 6 + bond_idx]
+            coords = self._rotate_branch_atoms(coords, atom1, atom2, angles, branch_atoms)
+
+        # Rotation (using quaternions)
+        angles = self.conf_params[:, 3:6]
+        quats = self._euler_to_quaternion(angles)
+        coords = self._rotate_points_by_quaternions(coords, quats)
+
+        # Translation
+        translations = self.conf_params[:, :3].unsqueeze(1)
+        coords = coords + translations
+
+        return coords
+
+    def _rotate_branch_atoms(self, coords: torch.Tensor, atom1: int, atom2: int, 
+                           angles: torch.Tensor, branch_atoms: List[int]) -> torch.Tensor:
+        """Rotate branch atoms around bond using precalculated branch list."""
         if not branch_atoms:
             return coords
             
@@ -173,7 +273,7 @@ class DrugConformation(nn.Module):
         
         # Prepare cross product matrices
         k = bond_vectors  # [n_conf, 3]
-        K = torch.zeros(self.n_conformers, 3, 3, device=coords.device)
+        K = torch.zeros(self.n_conformers, 3, 3, device=coords.device, dtype=torch.float32)
         K[:, 0, 1] = -k[:, 2]
         K[:, 0, 2] = k[:, 1]
         K[:, 1, 0] = k[:, 2]
@@ -182,7 +282,7 @@ class DrugConformation(nn.Module):
         K[:, 2, 1] = k[:, 0]
         
         # Construct rotation matrices using Rodrigues formula: R = I + sin(θ)K + (1-cos(θ))K²
-        I = torch.eye(3, device=coords.device).unsqueeze(0)
+        I = torch.eye(3, device=coords.device, dtype=torch.float32).unsqueeze(0)
         kkt = torch.bmm(k.unsqueeze(2), k.unsqueeze(1))  # [n_conf, 3, 3]
         R = (I * cos_angles + 
              K * sin_angles + 
@@ -196,6 +296,10 @@ class DrugConformation(nn.Module):
         
         return coords
 
+    def forward(self) -> torch.Tensor:
+        """Forward pass returns the computed 3D coordinates for all conformers."""
+        return self._compute_atom_coordinates()
+
 class VinaScoringFunction:
     def __init__(self):
         self.weights = torch.tensor([
@@ -205,13 +309,17 @@ class VinaScoringFunction:
             -0.0351,  # hydrophobic
             -0.587,   # hydrogen bonding
             0.0585    # Nrot weight
-        ])
+        ], dtype=torch.float32)
 
     def compute_score(self, ligand_coords: torch.Tensor, protein_coords: torch.Tensor, 
                      ligand_types: List[str], protein_types: List[str], n_rot: int) -> torch.Tensor:
-        # Get VDW radii for all atoms
-        lig_vdw = torch.tensor([AtomTyper.VDW_RADII[t] for t in ligand_types])
-        prot_vdw = torch.tensor([AtomTyper.VDW_RADII[t] for t in protein_types])
+        # Get VDW radii for all atoms with explicit float32 type
+        lig_vdw = torch.tensor([AtomTyper.VDW_RADII[t] for t in ligand_types], 
+                              dtype=torch.float32,
+                              device=ligand_coords.device)
+        prot_vdw = torch.tensor([AtomTyper.VDW_RADII[t] for t in protein_types],
+                               dtype=torch.float32,
+                               device=protein_coords.device)
         
         # Compute pairwise distances
         dists = torch.cdist(ligand_coords, protein_coords)
@@ -283,7 +391,7 @@ def load_drug():
             return jsonify({'error': 'Invalid SMILE sequence'}), 400
         
         # Generate 3D conformation
-        mol = Chem.AddHs(mol)
+        # mol = Chem.AddHs(mol)
         AllChem.EmbedMolecule(mol, randomSeed=42)
         AllChem.MMFFOptimizeMolecule(mol)
         
@@ -303,46 +411,74 @@ def load_drug():
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
+def get_protein_coords_from_pdb(pdb_data: str) -> np.ndarray:
+    """Extract protein coordinates from PDB data."""
+    coords = []
+    for line in pdb_data.split('\n'):
+        if line.startswith(('ATOM', 'HETATM')):
+            try:
+                x = float(line[30:38].strip())
+                y = float(line[38:46].strip())
+                z = float(line[46:54].strip())
+                coords.append([x, y, z])
+            except (ValueError, IndexError):
+                continue
+    return np.array(coords)
+
 @app.route('/api/start_docking', methods=['POST'])
 def start_docking():
     try:
         if not current_state['ligand_mol'] or not current_state['pdb_data']:
             return jsonify({'error': 'Both protein and ligand must be loaded'}), 400
         
-        # Initialize models
-        drug_conf = DrugConformation(current_state['ligand_mol'], n_conformers=100)
-        scoring_function = VinaScoringFunction()
+        # Extract protein coordinates from PDB
+        protein_coords = get_protein_coords_from_pdb(current_state['pdb_data'])
         
-        # Setup optimizer
-        optimizer = torch.optim.Adam(drug_conf.parameters(), lr=0.01)
-        
-        logger.info("Starting optimization...")
-        
-        # Optimization loop
-        for i in range(1000):
-            optimizer.zero_grad()
+        if len(protein_coords) == 0:
+            return jsonify({'error': 'Failed to extract protein coordinates from PDB'}), 400
             
-            # Get conformer coordinates
+        # Initialize drug conformations model with protein coordinates
+        drug_conf = DrugConformation(
+            mol=current_state['ligand_mol'],
+            protein_coords=protein_coords,
+            n_conformers=100,
+            surface_distance=0.0  # 5 Angstroms from protein surface
+        )
+        
+        # Get initial conformer coordinates
+        with torch.no_grad():
             ligand_coords = drug_conf._compute_atom_coordinates()
             
-            # Compute score
-            score = scoring_function.compute_score(
-                ligand_coords,
-                torch.tensor(current_state['protein_coords']),
-                drug_conf.atom_types,
-                current_state['protein_types'],
-                len(drug_conf.rotatable_bonds)
-            )
-            
-            # Compute loss and backpropagate
-            loss = score.mean()
-            loss.backward()
-            optimizer.step()
-            
-            if i % 100 == 0:
-                logger.info(f"Iteration {i}, Score: {loss.item():.3f}")
+        # Convert coordinates to PDB format for each conformer
+        conformer_pdbs = []
+        mol = current_state['ligand_mol']
         
-        return jsonify({'message': 'Docking completed successfully'})
+        # Convert coordinates to numpy for processing
+        coords_np = ligand_coords.cpu().numpy()
+        
+        for conf_idx, conf_coords in enumerate(coords_np):
+            # Create a copy of the molecule for this conformer
+            mol_copy = Chem.Mol(mol)
+            new_conf = Chem.Conformer(mol_copy.GetNumAtoms())
+            
+            # Update coordinates for this conformer
+            for atom_idx in range(mol_copy.GetNumAtoms()):
+                x, y, z = conf_coords[atom_idx]
+                new_conf.SetAtomPosition(atom_idx, Chem.rdGeometry.Point3D(float(x), float(y), float(z)))
+            
+            mol_copy.RemoveAllConformers()
+            mol_copy.AddConformer(new_conf)
+            
+            # Convert to PDB
+            conf_pdb = Chem.MolToPDBBlock(mol_copy)
+            conformer_pdbs.append(conf_pdb)
+        
+        return jsonify({
+            'message': 'Initial conformations generated near protein surface',
+            'protein_pdb': current_state['pdb_data'],
+            'conformer_pdbs': conformer_pdbs,
+            'num_protein_atoms': len(protein_coords)
+        })
         
     except Exception as e:
         logger.error(f"Error in start_docking: {str(e)}")

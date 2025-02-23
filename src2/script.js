@@ -39,8 +39,19 @@ function updateVisualization() {
     
     if (currentPDBData) {
         viewer.addModel(currentPDBData, "pdb");
-        // Apply selected style for protein
-        viewer.setStyle({}, {[style]: {}});
+        
+        if (style === 'cartoon') {
+            // Show protein in cartoon style
+            viewer.setStyle({resn: ["GLY", "ALA", "VAL", "LEU", "ILE", "PRO", "PHE", "TYR", "TRP", "SER", 
+                                  "THR", "CYS", "MET", "ASN", "GLN", "ASP", "GLU", "LYS", "ARG", "HIS"]}, 
+                          {cartoon: {}}); // List of standard amino acid residues
+            
+            // Show non-protein molecules (ligands, water, etc.) in stick style
+            viewer.setStyle({hetflag: true}, {stick: {}}); // hetflag selects non-protein molecules
+        } else {
+            // Apply selected style to everything
+            viewer.setStyle({}, {[style]: {}});
+        }
     } else if (currentDrugData) {
         viewer.addModel(currentDrugData, "pdb");
         // For drugs, use stick style if cartoon is selected, otherwise use selected style
@@ -126,31 +137,95 @@ document.getElementById('loadDrugButton').addEventListener('click', async functi
     }
 });
 
-// Handle start button
-document.getElementById('startButton').addEventListener('click', async function() {
-    try {
-        const response = await fetch(`${API_BASE_URL}/api/get_current_state`);
-        if (!response.ok) {
-            throw new Error('Failed to get current state');
-        }
+// Handle toggle button
+document.getElementById('toggleButton').addEventListener('click', async function() {
+    const button = this;
+    const currentState = button.dataset.state;
 
-        const data = await response.json();
-        
-        // Update the viewer with current state
-        viewer.clear();
-        if (data.pdb_data) {
-            currentPDBData = data.pdb_data;
-            currentDrugData = null;
-        } else if (data.drug_data) {
-            currentDrugData = data.drug_data;
-            currentPDBData = null;
+    if (currentState === 'start') {
+        try {
+            // First check if we have both protein and drug loaded
+            const response = await fetch(`${API_BASE_URL}/api/get_current_state`);
+            if (!response.ok) {
+                throw new Error('Failed to get current state');
+            }
+            const data = await response.json();
+            
+            if (!data.pdb_data || !data.drug_data) {
+                alert('Please load both protein and drug before starting');
+                return;
+            }
+
+            // Change button state to stop
+            button.textContent = 'Stop';
+            button.dataset.state = 'stop';
+            button.classList.add('secondary');
+
+            // Start the docking process
+            const dockingResponse = await fetch(`${API_BASE_URL}/api/start_docking`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                }
+            });
+
+            if (!dockingResponse.ok) {
+                throw new Error('Failed to generate conformations');
+            }
+            const dockingResult = await dockingResponse.json();
+            
+            // Clear the viewer
+            viewer.clear();
+            
+            // Add protein structure
+            let proteinModel = viewer.addModel(dockingResult.protein_pdb, "pdb");
+            
+            // Get current style
+            const style = document.getElementById('styleSelect').value;
+            
+            if (style === 'cartoon') {
+                // Show protein in cartoon style
+                viewer.setStyle({model: proteinModel, resn: ["GLY", "ALA", "VAL", "LEU", "ILE", "PRO", "PHE", "TYR", "TRP", "SER",
+                                                           "THR", "CYS", "MET", "ASN", "GLN", "ASP", "GLU", "LYS", "ARG", "HIS"]},
+                              {cartoon: {}});
+                
+                // Any non-protein parts in the protein model should be in stick style
+                viewer.setStyle({model: proteinModel, hetflag: true}, {stick: {}});
+            } else {
+                // Apply selected style to protein model
+                viewer.setStyle({model: proteinModel}, {[style]: {}});
+            }
+            
+            // Add each drug conformer as a separate model
+            dockingResult.conformer_pdbs.forEach((conformerPdb, index) => {
+                let drugModel = viewer.addModel(conformerPdb, "pdb");
+                // For drug conformers, always use stick style when in cartoon mode,
+                // otherwise use the selected style
+                if (style === 'cartoon') {
+                    viewer.setStyle({model: drugModel}, {stick: {}});
+                } else {
+                    viewer.setStyle({model: drugModel}, {[style]: {}});
+                }
+            });
+            
+            viewer.zoomTo();
+            viewer.render();
+
+        } catch (error) {
+            console.error('Error during conformation generation:', error);
+            alert('Error generating conformations');
+            
+            // Reset button state on error
+            button.textContent = 'Start';
+            button.dataset.state = 'start';
+            button.classList.remove('secondary');
         }
-        
-        updateVisualization();
-        
-    } catch (error) {
-        console.error('Error starting visualization:', error);
-        alert('Error starting visualization');
+    } else {
+        // Handle stop state
+        viewer.pause();
+        button.textContent = 'Start';
+        button.dataset.state = 'start';
+        button.classList.remove('secondary');
     }
 });
 
