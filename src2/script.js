@@ -137,7 +137,7 @@ document.getElementById('loadDrugButton').addEventListener('click', async functi
     }
 });
 
-// Handle toggle button
+// Handle toggle button for docking
 document.getElementById('toggleButton').addEventListener('click', async function() {
     const button = this;
     const currentState = button.dataset.state;
@@ -161,59 +161,92 @@ document.getElementById('toggleButton').addEventListener('click', async function
             button.dataset.state = 'stop';
             button.classList.add('secondary');
 
-            // Start the docking process
-            const dockingResponse = await fetch(`${API_BASE_URL}/api/start_docking`, {
+            // Initialize the docking process
+            const initResponse = await fetch(`${API_BASE_URL}/api/initialize_docking`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                 }
             });
 
-            if (!dockingResponse.ok) {
-                throw new Error('Failed to generate conformations');
+            if (!initResponse.ok) {
+                throw new Error('Failed to initialize docking');
             }
-            const dockingResult = await dockingResponse.json();
-            
-            // Clear the viewer
-            viewer.clear();
-            
-            // Add protein structure
-            let proteinModel = viewer.addModel(dockingResult.protein_pdb, "pdb");
-            
-            // Get current style
-            const style = document.getElementById('styleSelect').value;
-            
-            if (style === 'cartoon') {
-                // Show protein in cartoon style
-                viewer.setStyle({model: proteinModel, resn: ["GLY", "ALA", "VAL", "LEU", "ILE", "PRO", "PHE", "TYR", "TRP", "SER",
-                                                           "THR", "CYS", "MET", "ASN", "GLN", "ASP", "GLU", "LYS", "ARG", "HIS"]},
-                              {cartoon: {}});
-                
-                // Any non-protein parts in the protein model should be in stick style
-                viewer.setStyle({model: proteinModel, hetflag: true}, {stick: {}});
-            } else {
-                // Apply selected style to protein model
-                viewer.setStyle({model: proteinModel}, {[style]: {}});
-            }
-            
-            // Add each drug conformer as a separate model
-            dockingResult.conformer_pdbs.forEach((conformerPdb, index) => {
-                let drugModel = viewer.addModel(conformerPdb, "pdb");
-                // For drug conformers, always use stick style when in cartoon mode,
-                // otherwise use the selected style
-                if (style === 'cartoon') {
-                    viewer.setStyle({model: drugModel}, {stick: {}});
-                } else {
-                    viewer.setStyle({model: drugModel}, {[style]: {}});
+
+            // Start optimization loop
+            let isRunning = true;
+            while (isRunning && button.dataset.state === 'stop') {
+                // Call optimize endpoint
+                const optimizeResponse = await fetch(`${API_BASE_URL}/api/optimize_docking`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    }
+                });
+
+                if (!optimizeResponse.ok) {
+                    throw new Error('Failed to optimize conformations');
                 }
-            });
-            
-            viewer.zoomTo();
-            viewer.render();
+
+                const result = await optimizeResponse.json();
+                
+                // Update visualization
+                viewer.clear();
+                
+                // Add protein structure
+                viewer.addModel(result.protein_pdb, "pdb");
+                
+                // Get current style
+                const style = document.getElementById('styleSelect').value;
+                
+                if (style === 'cartoon') {
+                    // Show protein in cartoon style
+                    viewer.setStyle({resn: ["GLY", "ALA", "VAL", "LEU", "ILE", "PRO", "PHE", "TYR", "TRP", "SER",
+                                         "THR", "CYS", "MET", "ASN", "GLN", "ASP", "GLU", "LYS", "ARG", "HIS"]},
+                                {cartoon: {}});
+                    
+                    // Any non-protein parts in the protein model should be in stick style
+                    viewer.setStyle({hetflag: true}, {stick: {}});
+                } else {
+                    // Apply selected style to all atoms
+                    viewer.setStyle({}, {[style]: {}});
+                }
+                
+                // Add each drug conformer as a separate model with different colors
+                result.conformer_pdbs.forEach((conformerPdb, index) => {
+                    const model = viewer.addModel(conformerPdb, "pdb");
+                    const t = index / (result.conformer_pdbs.length - 1); // normalized position in spectrum
+                    const r = Math.floor(255 * (1 - t)); // red component decreases
+                    const b = Math.floor(255 * t);       // blue component increases
+                    const color = `0x${r.toString(16).padStart(2,'0')}00${b.toString(16).padStart(2,'0')}`; // format as hex
+                    
+                    if (style === 'cartoon') {
+                        viewer.setStyle({model: model}, {stick: {color: color}});
+                    } else {
+                        viewer.setStyle({model: model}, {[style]: {color: color}});
+                    }
+                });
+                
+                viewer.zoomTo();
+                viewer.render();
+
+                // Check if optimization is complete
+                if (result.is_complete) {
+                    isRunning = false;
+                }
+
+                // Add a small delay to prevent overwhelming the server
+                await new Promise(resolve => setTimeout(resolve, 100));
+            }
+
+            // Reset button state
+            button.textContent = 'Start';
+            button.dataset.state = 'start';
+            button.classList.remove('secondary');
 
         } catch (error) {
-            console.error('Error during conformation generation:', error);
-            alert('Error generating conformations');
+            console.error('Error during docking:', error);
+            alert('Error during docking process');
             
             // Reset button state on error
             button.textContent = 'Start';
@@ -221,17 +254,11 @@ document.getElementById('toggleButton').addEventListener('click', async function
             button.classList.remove('secondary');
         }
     } else {
-        // Handle stop state
-        viewer.pause();
+        // User clicked stop - button state will be checked in while loop
         button.textContent = 'Start';
         button.dataset.state = 'start';
         button.classList.remove('secondary');
     }
-});
-
-// Handle stop button
-document.getElementById('stopButton').addEventListener('click', function() {
-    viewer.pause();
 });
 
 // Handle style changes
