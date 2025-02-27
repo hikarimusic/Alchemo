@@ -30,6 +30,28 @@ document.addEventListener('DOMContentLoaded', function() {
     `;
 });
 
+// Helper function to display score
+function displayScore(score) {
+    const scoreDisplay = document.getElementById('scoreDisplay');
+    if (score !== null) {
+        scoreDisplay.textContent = `Best Score: ${score.toFixed(2)}`;
+        scoreDisplay.style.display = 'block';
+        
+        // Auto-hide after 10 seconds
+        setTimeout(() => {
+            scoreDisplay.style.display = 'none';
+        }, 10000);
+    } else {
+        scoreDisplay.style.display = 'none';
+    }
+}
+
+// Helper function to show error messages
+function showError(message) {
+    alert(message);
+    console.error(message);
+}
+
 // Update visualization style function
 function updateVisualization() {
     const style = document.getElementById('styleSelect').value;
@@ -72,7 +94,7 @@ document.getElementById('loadProteinButton').addEventListener('click', async fun
     const file = fileInput.files[0];
     
     if (!file) {
-        alert('Please select a PDB file first');
+        showError('Please select a PDB file first');
         return;
     }
 
@@ -95,10 +117,10 @@ document.getElementById('loadProteinButton').addEventListener('click', async fun
         currentDrugData = null; // Clear any existing drug data
         
         updateVisualization();
+        displayScore(null); // Hide score display
         
     } catch (error) {
-        console.error('Error loading protein:', error);
-        alert('Error loading protein file');
+        showError('Error loading protein file: ' + error.message);
     }
 });
 
@@ -108,7 +130,7 @@ document.getElementById('loadDrugButton').addEventListener('click', async functi
     const smileSequence = smileInput.value.trim();
     
     if (!smileSequence) {
-        alert('Please enter a SMILE sequence');
+        showError('Please enter a SMILE sequence');
         return;
     }
 
@@ -130,10 +152,10 @@ document.getElementById('loadDrugButton').addEventListener('click', async functi
         currentPDBData = null; // Clear any existing protein data
         
         updateVisualization();
+        displayScore(null); // Hide score display
         
     } catch (error) {
-        console.error('Error loading drug:', error);
-        alert('Error loading drug');
+        showError('Error loading drug: ' + error.message);
     }
 });
 
@@ -152,7 +174,7 @@ document.getElementById('toggleButton').addEventListener('click', async function
             const data = await response.json();
             
             if (!data.pdb_data || !data.drug_data) {
-                alert('Please load both protein and drug before starting');
+                showError('Please load both protein and drug before starting');
                 return;
             }
 
@@ -181,7 +203,10 @@ document.getElementById('toggleButton').addEventListener('click', async function
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
-                    }
+                    },
+                    body: JSON.stringify({
+                        is_stopped: false
+                    })
                 });
 
                 if (!optimizeResponse.ok) {
@@ -215,7 +240,7 @@ document.getElementById('toggleButton').addEventListener('click', async function
                 // Add each drug conformer as a separate model with different colors
                 result.conformer_pdbs.forEach((conformerPdb, index) => {
                     const model = viewer.addModel(conformerPdb, "pdb");
-                    const t = index / (result.conformer_pdbs.length - 1); // normalized position in spectrum
+                    const t = index / Math.max(1, result.conformer_pdbs.length - 1); // normalized position in spectrum
                     const r = Math.floor(255 * (1 - t)); // red component decreases
                     const b = Math.floor(255 * t);       // blue component increases
                     const color = `0x${r.toString(16).padStart(2,'0')}00${b.toString(16).padStart(2,'0')}`; // format as hex
@@ -230,6 +255,9 @@ document.getElementById('toggleButton').addEventListener('click', async function
                 viewer.zoomTo();
                 viewer.render();
 
+                // During optimization, don't display score
+                displayScore(null);
+
                 // Check if optimization is complete
                 if (result.is_complete) {
                     isRunning = false;
@@ -239,14 +267,75 @@ document.getElementById('toggleButton').addEventListener('click', async function
                 await new Promise(resolve => setTimeout(resolve, 100));
             }
 
+            // If we broke out of the loop due to stop button, call optimize once more with is_stopped=true
+            if (button.dataset.state === 'start') {
+                // User pressed stop - retrieve only the best conformer
+                const finalResponse = await fetch(`${API_BASE_URL}/api/optimize_docking`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        is_stopped: true
+                    })
+                });
+
+                if (finalResponse.ok) {
+                    const finalResult = await finalResponse.json();
+                    
+                    // Update visualization with only the best conformer
+                    viewer.clear();
+                    
+                    // Add protein structure
+                    viewer.addModel(finalResult.protein_pdb, "pdb");
+                    
+                    // Get current style
+                    const style = document.getElementById('styleSelect').value;
+                    
+                    if (style === 'cartoon') {
+                        // Show protein in cartoon style
+                        viewer.setStyle({resn: ["GLY", "ALA", "VAL", "LEU", "ILE", "PRO", "PHE", "TYR", "TRP", "SER",
+                                             "THR", "CYS", "MET", "ASN", "GLN", "ASP", "GLU", "LYS", "ARG", "HIS"]},
+                                    {cartoon: {}});
+                        
+                        // Any non-protein parts in the protein model should be in stick style
+                        viewer.setStyle({hetflag: true}, {stick: {}});
+                    } else {
+                        // Apply selected style to all atoms
+                        viewer.setStyle({}, {[style]: {}});
+                    }
+                    
+                    // Add only the best conformer in a distinct color
+                    if (finalResult.conformer_pdbs.length > 0) {
+                        const model = viewer.addModel(finalResult.conformer_pdbs[0], "pdb");
+                        
+                        // Use bright green for the best conformer
+                        const color = "0x00FF00"; // Bright green
+                        
+                        if (style === 'cartoon') {
+                            viewer.setStyle({model: model}, {stick: {color: color}});
+                        } else {
+                            viewer.setStyle({model: model}, {[style]: {color: color}});
+                        }
+                        
+                        // Display the score
+                        if (finalResult.scores && finalResult.scores.length > 0) {
+                            displayScore(finalResult.scores[0]);
+                        }
+                    }
+                    
+                    viewer.zoomTo();
+                    viewer.render();
+                }
+            }
+
             // Reset button state
             button.textContent = 'Start';
             button.dataset.state = 'start';
             button.classList.remove('secondary');
 
         } catch (error) {
-            console.error('Error during docking:', error);
-            alert('Error during docking process');
+            showError('Error during docking: ' + error.message);
             
             // Reset button state on error
             button.textContent = 'Start';

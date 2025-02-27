@@ -8,3 +8,5 @@ matplotlib
 Flask
 flask-cors
 rdkit
+
+scikit-learn
