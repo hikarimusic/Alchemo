@@ -89,12 +89,11 @@ class AtomTyper:
     
     @staticmethod
     def is_hbond_donor(atom: Chem.Atom) -> bool:
-        """Determine if atom is a hydrogen bond donor."""
+        """Determine if atom is a hydrogen bond donor using implicit hydrogens."""
         # Oxygen or nitrogen with at least one hydrogen
         if atom.GetAtomicNum() in [7, 8]:  # N, O
-            for neighbor in atom.GetNeighbors():
-                if neighbor.GetAtomicNum() == 1:  # Hydrogen
-                    return True
+            if atom.GetTotalNumHs() > 0:  # Check for implicit hydrogens
+                return True
         
         # Metals are treated as hydrogen bond donors in Vina
         if atom.GetAtomicNum() in [12, 20, 25, 26, 29, 30]:  # Mg, Ca, Mn, Fe, Cu, Zn
@@ -120,6 +119,96 @@ class AtomTyper:
         
         return atom_types, is_hydrophobic, is_hbond_donor, is_hbond_acceptor
 
+class ProteinAtomTyper:
+    """Specialized atom typing for protein structures based on PDB conventions"""
+    
+    # Mappings of amino acid atom names to properties
+    # Based on standard PDB naming conventions
+    
+    @staticmethod
+    def get_atom_properties_from_pdb(pdb_data):
+        """
+        Determine atom properties directly from PDB file using amino acid knowledge
+        Returns tuple of (atom_types, is_hydrophobic, is_hbond_donor, is_hbond_acceptor)
+        """
+        atom_types = []
+        is_hydrophobic = []
+        is_hbond_donor = []
+        is_hbond_acceptor = []
+        
+        for line in pdb_data.split('\n'):
+            if not line.startswith(('ATOM', 'HETATM')):
+                continue
+                
+            try:
+                # Extract element and atom name
+                element = line[76:78].strip()
+                if not element:  # If element field is empty, use first character of atom name
+                    element = line[12:16].strip()[0]
+                
+                element = element.capitalize()
+                atom_name = line[12:16].strip()
+                residue_name = line[17:20].strip()
+                
+                atom_types.append(element)
+                
+                # Determine properties based on atom identity and context
+                # Hydrophobic atoms
+                if element == 'C':
+                    # Carbon is generally hydrophobic unless it's a carbonyl carbon
+                    if atom_name in ['C', 'CA']:  # Backbone carbons
+                        is_hydrophobic.append(False)
+                    elif residue_name in ['ALA', 'VAL', 'LEU', 'ILE', 'MET', 'PHE', 'TYR', 'TRP', 'PRO'] and atom_name.startswith('C'):
+                        # Side chain carbons of hydrophobic amino acids
+                        is_hydrophobic.append(True)
+                    else:
+                        is_hydrophobic.append(False)
+                elif element in ['Cl', 'Br', 'I']:
+                    is_hydrophobic.append(True)
+                else:
+                    is_hydrophobic.append(False)
+                
+                # Hydrogen bond donors
+                if element == 'N':
+                    # Amide/amine nitrogens are donors
+                    if atom_name == 'N' or residue_name in ['LYS', 'ARG', 'HIS', 'TRP'] and atom_name.startswith('N'):
+                        is_hbond_donor.append(True)
+                    else:
+                        is_hbond_donor.append(False)
+                elif element == 'O':
+                    # Hydroxyl oxygens are donors
+                    if residue_name in ['SER', 'THR', 'TYR'] and atom_name.startswith('O') and not atom_name in ['O', 'OXT']:
+                        is_hbond_donor.append(True)
+                    else:
+                        is_hbond_donor.append(False)
+                elif element in ['Mg', 'Ca', 'Mn', 'Fe', 'Cu', 'Zn']:
+                    # Metals can act as H-bond donors in Vina
+                    is_hbond_donor.append(True)
+                else:
+                    is_hbond_donor.append(False)
+                
+                # Hydrogen bond acceptors
+                if element == 'O':
+                    # Almost all oxygens are acceptors
+                    is_hbond_acceptor.append(True)
+                elif element == 'N':
+                    # Most nitrogens with free lone pairs are acceptors
+                    if atom_name == 'N':  # Backbone N is usually not a good acceptor (has H)
+                        is_hbond_acceptor.append(False)
+                    elif residue_name in ['HIS', 'ASN', 'GLN', 'TRP']:
+                        is_hbond_acceptor.append(True)
+                    else:
+                        is_hbond_acceptor.append(False)
+                else:
+                    is_hbond_acceptor.append(False)
+                    
+            except (ValueError, IndexError) as e:
+                # Skip problematic lines
+                logger.warning(f"Error processing PDB line: {e}")
+                continue
+        
+        return atom_types, is_hydrophobic, is_hbond_donor, is_hbond_acceptor
+    
 class VinaScoringFunction:
     def __init__(self, device, mol):
         self.device = device
@@ -410,7 +499,7 @@ class VinaScoringFunction:
         return prot_is_hydrophobic, prot_is_hbond_donor, prot_is_hbond_acceptor
 
 class DrugConformation(nn.Module):
-    def __init__(self, mol, protein_coords, n_conformers=100, surface_distance=0.0):
+    def __init__(self, mol, protein_coords, n_conformers=100, sample_mode="volume", surface_distance=0.0):
         super().__init__()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         logger.info(f"DrugConformation using device: {self.device}")
@@ -431,14 +520,52 @@ class DrugConformation(nn.Module):
         self.rotatable_bonds, self.branch_atoms = self._find_rotatable_bonds_and_branches()
         n_rotatable = len(self.rotatable_bonds)
         
-        # Initialize parameters near protein surface
+        # Calculate protein center and approximate radius for volume sampling
+        protein_center = self.protein_coords.mean(dim=0)
+        protein_radius = torch.max(torch.norm(self.protein_coords - protein_center, dim=1))
+        self.protein_radius = protein_radius
+        
+        # Initialize parameters based on sample mode
         n_params = 6 + n_rotatable  # 3 for position, 3 for orientation, rest for rotatable bonds
-        initial_params = self._initialize_near_surface(surface_distance)
+        if sample_mode == "surface":
+            initial_params = self._initialize_near_surface(surface_distance)
+        elif sample_mode == "volume":
+            initial_params = self._initialize_throughout_volume(protein_radius)
+        else:
+            raise ValueError(f"Unknown sample mode: {sample_mode}")
         
         # Parameters: [n_conformers, n_params]
         self.conf_params = nn.Parameter(initial_params)
         
         self.to(self.device)
+
+    def _initialize_throughout_volume(self, protein_radius):
+        """Initialize conformers with positions sampled throughout the actual protein volume."""
+        n_rotatable = len(self.rotatable_bonds)
+        
+        # Calculate bounding box of protein
+        min_coords = self.protein_coords.min(dim=0)[0]
+        max_coords = self.protein_coords.max(dim=0)[0]
+        
+        # Add a small buffer to the bounding box (20% of the range in each dimension)
+        box_size = max_coords - min_coords
+        buffer = box_size * 0.0
+        min_coords = min_coords - buffer
+        max_coords = max_coords + buffer
+        
+        # Generate random positions within the bounding box
+        positions = min_coords + torch.rand(self.n_conformers, 3, device=self.device) * (max_coords - min_coords)
+        
+        # Random orientations (euler angles)
+        orientations = torch.rand(self.n_conformers, 3, device=self.device) * 2 * np.pi
+        
+        # Use zero rotatable bond angles to maintain initial conformer rotations
+        rot_angles = torch.zeros(self.n_conformers, n_rotatable, device=self.device)
+        
+        # Combine all parameters
+        params = torch.cat([positions, orientations, rot_angles], dim=1)
+        
+        return params.to(torch.float32)
 
     def _initialize_near_surface(self, surface_distance: float) -> torch.Tensor:
         """Initialize conformers near the protein surface."""
@@ -618,6 +745,25 @@ class DrugConformation(nn.Module):
 
         return coords
 
+    def sample_random_conformations(self, protein_radius):
+        """Generate new random conformations throughout the protein volume."""
+        # Store the original requires_grad state
+        requires_grad = self.conf_params.requires_grad
+        
+        # Temporarily set requires_grad to False to avoid gradient computation
+        self.conf_params.requires_grad = False
+        
+        # Generate new random parameters
+        self.conf_params.data = self._initialize_throughout_volume(protein_radius)
+        
+        # Compute coordinates
+        coords = self()
+        
+        # Restore the original requires_grad state
+        self.conf_params.requires_grad = requires_grad
+        
+        return coords
+
     def forward(self) -> torch.Tensor:
         """Forward pass returns the computed 3D coordinates for all conformers."""
         return self._compute_atom_coordinates()
@@ -627,13 +773,15 @@ CORS(app)
 
 # Store current state
 current_state = {
+    # Input data
     'pdb_data': None,
     'drug_data': None,
     'smile_sequence': None,
-    'protein_mol': None,
     'ligand_mol': None,
     'protein_coords': None,
     'protein_types': None,
+    
+    # Docking components
     'drug_conf': None,
     'scoring_fn': None,
     'optimizer': None,
@@ -642,52 +790,16 @@ current_state = {
     'prot_is_hydrophobic': None,
     'prot_is_hbond_donor': None,
     'prot_is_hbond_acceptor': None,
-    'best_scores': None,
-    'best_coords': None,
+    
+    # Optimization state
     'step_count': 0,
     'last_improvement_step': 0,
     'stagnation_tolerance': 10,
-    'global_best_scores': None,  # Track best scores across all rounds
-    'global_best_coords': None,  # Track best coordinates across all rounds
-    'round_best_scores': None,   # Track best scores for current round
-    'total_steps': 1e10
+    'total_steps': 1e10,
+    'global_best_scores': None,  # Best scores across all rounds
+    'global_best_coords': None,  # Best coordinates across all rounds
+    'round_best_scores': None    # Best scores for current round
 }
-
-def get_protein_coords_and_types(pdb_data: str) -> Tuple[np.ndarray, List[str]]:
-    """Extract protein coordinates and atom types from PDB data."""
-    coords = []
-    atom_types = []
-    
-    for line in pdb_data.split('\n'):
-        if line.startswith(('ATOM', 'HETATM')):
-            try:
-                # Extract coordinates
-                x = float(line[30:38].strip())
-                y = float(line[38:46].strip())
-                z = float(line[46:54].strip())
-                coords.append([x, y, z])
-                
-                # Extract element symbol (columns 77-78)
-                element = line[76:78].strip()
-                if not element:  # If element field is empty, use first character of atom name
-                    element = line[12:16].strip()[0]
-                
-                # Map some common PDB element representations
-                element_map = {
-                    'FE': 'Fe',
-                    'CU': 'Cu',
-                    'ZN': 'Zn',
-                    'BR': 'Br',
-                    'CL': 'Cl'
-                }
-                element = element_map.get(element.upper(), element.capitalize())
-                
-                atom_types.append(element)
-                
-            except (ValueError, IndexError):
-                continue
-                
-    return np.array(coords), atom_types
 
 @app.route('/api/load_protein', methods=['POST'])
 def load_protein():
@@ -698,17 +810,38 @@ def load_protein():
         if not pdb_data:
             return jsonify({'error': 'No PDB data provided'}), 400
         
-        # Extract coordinates and atom types
-        coords, atom_types = get_protein_coords_and_types(pdb_data)
+        # Extract coordinates and atom types directly
+        coords = []
+        atom_types = []
+        
+        for line in pdb_data.split('\n'):
+            if line.startswith(('ATOM', 'HETATM')):
+                try:
+                    # Extract coordinates
+                    x = float(line[30:38].strip())
+                    y = float(line[38:46].strip())
+                    z = float(line[46:54].strip())
+                    coords.append([x, y, z])
+                    
+                    # Extract element symbol (columns 77-78)
+                    element = line[76:78].strip()
+                    if not element:  # If element field is empty, use first character of atom name
+                        element = line[12:16].strip()[0]
+                    
+                    # Simply capitalize the element
+                    atom_types.append(element.capitalize())
+                    
+                except (ValueError, IndexError):
+                    continue
         
         if len(coords) == 0:
             return jsonify({'error': 'Failed to extract protein coordinates'}), 400
         
         # Store the data
         current_state['pdb_data'] = pdb_data
-        current_state['protein_coords'] = coords
+        current_state['protein_coords'] = np.array(coords)
         current_state['protein_types'] = atom_types
-        
+                
         return jsonify({
             'message': 'Protein loaded successfully',
             'pdb_data': pdb_data
@@ -733,10 +866,11 @@ def load_drug():
         if mol is None:
             return jsonify({'error': 'Invalid SMILE sequence'}), 400
         
-        # Generate 3D conformation
-        mol = Chem.AddHs(mol)  # Add hydrogens explicitly for better scoring
-        AllChem.EmbedMolecule(mol, randomSeed=42)
-        AllChem.MMFFOptimizeMolecule(mol)
+        # Add hydrogens temporarily for better 3D geometry optimization
+        mol_with_h = Chem.AddHs(mol)
+        AllChem.EmbedMolecule(mol_with_h, randomSeed=42)
+        AllChem.MMFFOptimizeMolecule(mol_with_h)
+        mol = Chem.RemoveHs(mol_with_h)
         
         # Store molecule and convert to PDB
         current_state['ligand_mol'] = mol
@@ -763,8 +897,14 @@ def initialize_docking():
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         logger.info(f"Using device: {device}")
         
+        # Calculate protein center and radius for volume sampling
+        protein_coords_tensor = torch.tensor(current_state['protein_coords'], device=device, dtype=torch.float32)
+        protein_center = protein_coords_tensor.mean(dim=0)
+        protein_radius = torch.max(torch.norm(protein_coords_tensor - protein_center, dim=1))
+        
         # Reset all state variables
         current_state.update({
+            # Docking components
             'drug_conf': None,
             'scoring_fn': None,
             'optimizer': None,
@@ -773,56 +913,73 @@ def initialize_docking():
             'prot_is_hydrophobic': None,
             'prot_is_hbond_donor': None,
             'prot_is_hbond_acceptor': None,
-            'best_scores': None,
-            'best_coords': None,
+            
+            # Optimization state
             'step_count': 0,
             'last_improvement_step': 0,
+            'stagnation_tolerance': 10,
+            'total_steps': 1e10,
             'global_best_scores': None,
             'global_best_coords': None,
             'round_best_scores': None,
-            'stagnation_tolerance': 10,
-            'total_steps': 1e10
+            
+            # Sampling phase state
+            'is_sampling_phase': True,
+            'sampling_step_count': 0,
+            'sampling_no_improve_count': 0,
+            'sampling_max_no_improve': 10,  # Switch to optimization after 10 steps without improvement
+            'protein_radius': protein_radius.item()
         })
         
-        # Initialize drug conformation model
+        # Initialize drug conformation model with volume sampling
         drug_conf = DrugConformation(
             mol=current_state['ligand_mol'],
             protein_coords=current_state['protein_coords'],
-            n_conformers=1000,  # Reduced for faster response
-            surface_distance=0.0  # Initial distance from protein surface
+            n_conformers=5000,  # Use 1000 conformers as requested
+            sample_mode="volume"  # Use volume sampling throughout the protein sphere
         ).to(device)
         
         # Initialize scoring function
         scoring_fn = VinaScoringFunction(device, current_state['ligand_mol'])
         
-        # Set up optimizer
-        optimizer = torch.optim.SGD([drug_conf.conf_params],
-                                lr=0.3,                # Aggressive learning rate
-                                momentum=0.98,         # Very high momentum
-                                dampening=0,           # No dampening for more aggressive updates
-                                weight_decay=0.3,      # Add noise through weight decay
-                                nesterov=True)         # More aggressive momentum implementation
+        # Set up optimizer (will be used later in the optimization phase)
+        optimizer = torch.optim.RMSprop([drug_conf.conf_params],
+                                    lr=0.01,
+                                    alpha=0.99,
+                                    eps=1e-08,
+                                    weight_decay=0,
+                                    momentum=0.5,
+                                    centered=False)
         
-        # Get protein data
-        protein_coords = torch.tensor(
-            current_state['protein_coords'],
-            device=device,
-            dtype=torch.float32
-        )
+        # Rest of the function remains the same...
+        # Use specialized PDB-based atom typing for proteins
+        try:
+            logger.info("Using specialized protein atom typing from PDB data")
+            pdb_data = current_state['pdb_data']
+            protein_types, is_hydrophobic, is_hbond_donor, is_hbond_acceptor = ProteinAtomTyper.get_atom_properties_from_pdb(pdb_data)
+            
+            # Get protein VDW radii from AtomTyper
+            prot_vdw = torch.tensor(
+                [AtomTyper.VDW_RADII.get(t, 1.7) for t in protein_types],
+                device=device,
+                dtype=torch.float32
+            )
+        except Exception as e:
+            logger.warning(f"Error in specialized protein typing: {str(e)}. Falling back to basic atom typing")
+            # Fall back to basic typing
+            prot_types = current_state['protein_types']
+            is_hydrophobic = [t in ['C', 'Cl', 'Br', 'I'] for t in prot_types]
+            is_hbond_donor = [t in ['N', 'O', 'Mg', 'Ca', 'Mn', 'Fe', 'Cu', 'Zn'] for t in prot_types]
+            is_hbond_acceptor = [t in ['N', 'O'] for t in prot_types]
+            
+            # Get protein VDW radii
+            prot_vdw = torch.tensor(
+                [AtomTyper.VDW_RADII.get(t, 1.7) for t in prot_types],
+                device=device,
+                dtype=torch.float32
+            )
         
-        # Get protein VDW radii
-        prot_vdw = torch.tensor(
-            [AtomTyper.VDW_RADII.get(t, 1.7) for t in current_state['protein_types']],  # Default to oxygen radius if unknown
-            device=device,
-            dtype=torch.float32
-        )
-        
-        # Get protein properties - simulate from protein types since we don't have a protein_mol
-        prot_types = current_state['protein_types']
-        is_hydrophobic = [t in ['C', 'Cl', 'Br', 'I'] for t in prot_types]
-        is_hbond_donor = [t in ['N', 'O', 'Mg', 'Ca', 'Mn', 'Fe', 'Cu', 'Zn'] for t in prot_types]
-        is_hbond_acceptor = [t in ['N', 'O'] for t in prot_types]
-        
+        # Convert properties to tensors
         prot_is_hydrophobic = torch.tensor(is_hydrophobic, device=device, dtype=torch.bool)
         prot_is_hbond_donor = torch.tensor(is_hbond_donor, device=device, dtype=torch.bool)
         prot_is_hbond_acceptor = torch.tensor(is_hbond_acceptor, device=device, dtype=torch.bool)
@@ -834,21 +991,20 @@ def initialize_docking():
         
         # Store all necessary state
         current_state.update({
+            # Docking components
             'drug_conf': drug_conf,
             'scoring_fn': scoring_fn,
             'optimizer': optimizer,
-            'protein_coords_tensor': protein_coords,
+            'protein_coords_tensor': protein_coords_tensor,
             'prot_vdw': prot_vdw,
             'prot_is_hydrophobic': prot_is_hydrophobic,
             'prot_is_hbond_donor': prot_is_hbond_donor,
             'prot_is_hbond_acceptor': prot_is_hbond_acceptor,
-            'best_scores': best_scores,
-            'best_coords': None,
+            
+            # Optimization state
             'global_best_scores': global_best_scores,
             'global_best_coords': None,
-            'round_best_scores': round_best_scores,
-            'step_count': 0,
-            'last_improvement_step': 0
+            'round_best_scores': round_best_scores
         })
         
         return jsonify({'message': 'Docking initialized successfully'})
@@ -870,6 +1026,7 @@ def optimize_docking():
         prot_is_hydrophobic = current_state['prot_is_hydrophobic']
         prot_is_hbond_donor = current_state['prot_is_hbond_donor']
         prot_is_hbond_acceptor = current_state['prot_is_hbond_acceptor']
+        is_sampling_phase = current_state['is_sampling_phase']
         
         # Parse request to check if we're stopping
         data = request.json or {}
@@ -884,102 +1041,191 @@ def optimize_docking():
         global_best_coords = current_state['global_best_coords']
         round_best_scores = current_state['round_best_scores']
         
+        # Variables to track current iteration conformations
+        current_ligand_coords = None
+        current_scores = None
+        
         # If not stopped, perform one optimization step
         if not is_stopped:
-            optimizer.zero_grad()
-            
-            # Get current conformer coordinates
-            ligand_coords = drug_conf()
-            
-            # Compute scores with updated scoring function
-            scores = scoring_fn.compute_score(
-                ligand_coords,
-                protein_coords,
-                drug_conf.ligand_vdw,
-                prot_vdw,
-                prot_is_hydrophobic,
-                prot_is_hbond_donor,
-                prot_is_hbond_acceptor,
-                len(drug_conf.rotatable_bonds)
-            )
-            
-            # Update global best scores/coordinates
-            global_improved = scores < global_best_scores
-            if global_improved.any():
-                if global_best_coords is None:
-                    global_best_coords = ligand_coords.clone()
-                else:
-                    global_best_coords[global_improved] = ligand_coords[global_improved].clone()
-                global_best_scores[global_improved] = scores[global_improved]
-                current_state['global_best_coords'] = global_best_coords
+            # Handle sampling phase differently from optimization phase
+            is_sampling_phase = False
+            if is_sampling_phase:
+                # In sampling phase, we randomly generate new conformations without optimization
+                if current_state['sampling_step_count'] == 0:
+                    logger.info("Starting random sampling phase")
                 
-            # Check round improvements
-            round_improved = scores < round_best_scores
-            improvement_ratio = round_improved.float().mean()  # Calculate percentage of improved conformers
-            significant_round_improvement = improvement_ratio > 0.05  # More than 5% improved
-            
-            if significant_round_improvement:
-                current_state['last_improvement_step'] = current_state['step_count']
-                round_best_scores[round_improved] = scores[round_improved]
-            
-            # Check for stagnation
-            steps_since_improvement = current_state['step_count'] - current_state['last_improvement_step']
-            if steps_since_improvement > current_state['stagnation_tolerance']:
-                logger.info("Score stagnant - reinitializing coordinates")
-                # Reinitialize coordinates
-                drug_conf.conf_params.data = drug_conf._initialize_near_surface(0.0)
-                # Reset round-based scores but keep global scores
-                current_state['round_best_scores'] = float('inf') * torch.ones(drug_conf.n_conformers, device=drug_conf.device)
-                round_best_scores = current_state['round_best_scores']
-                # Reset last improvement step
-                current_state['last_improvement_step'] = current_state['step_count']
-            
-            # Compute loss (negative because we want to minimize energy)
-            loss = scores.mean()
-            loss.backward()
-            
-            optimizer.step()
-            
-            # Update step count
-            current_state['step_count'] += 1
+                # Generate random conformations
+                ligand_coords = drug_conf.sample_random_conformations(current_state['protein_radius'])
+                current_ligand_coords = ligand_coords  # Store current conformations
+                
+                # Compute scores
+                scores = scoring_fn.compute_score(
+                    ligand_coords,
+                    protein_coords,
+                    drug_conf.ligand_vdw,
+                    prot_vdw,
+                    prot_is_hydrophobic,
+                    prot_is_hbond_donor,
+                    prot_is_hbond_acceptor,
+                    len(drug_conf.rotatable_bonds)
+                )
+                current_scores = scores  # Store current scores
+                
+                # Update global best scores/coordinates
+                global_improved = scores < global_best_scores
+                if global_improved.any():
+                    logger.info(f"Found better conformations in sampling phase: {global_improved.sum().item()} improved")
+                    if global_best_coords is None:
+                        global_best_coords = ligand_coords.clone()
+                    else:
+                        global_best_coords[global_improved] = ligand_coords[global_improved].clone()
+                    global_best_scores[global_improved] = scores[global_improved]
+                    current_state['global_best_coords'] = global_best_coords
+                    current_state['sampling_no_improve_count'] = 0  # Reset the no-improvement counter
+                else:
+                    current_state['sampling_no_improve_count'] += 1
+                    logger.info(f"No improvement in sampling phase. Counter: {current_state['sampling_no_improve_count']}")
+                
+                # Check if we should switch to optimization phase
+                if current_state['sampling_no_improve_count'] >= current_state['sampling_max_no_improve']:
+                    logger.info("Switching from sampling phase to optimization phase")
+                    current_state['is_sampling_phase'] = False
+                    is_sampling_phase = False
+                    
+                    # Initialize the optimizer's parameters with the best conformers found during sampling
+                    # Here we just reinitialize near the surface, but ideally we would set the parameters 
+                    # based on the best conformations found
+                    drug_conf.conf_params.data = drug_conf._initialize_near_surface(0.0)
+                    
+                    # Reset optimization state
+                    current_state['step_count'] = 0
+                    current_state['last_improvement_step'] = 0
+                    current_state['round_best_scores'] = float('inf') * torch.ones(drug_conf.n_conformers, device=drug_conf.device)
+                    round_best_scores = current_state['round_best_scores']
+                
+                current_state['sampling_step_count'] += 1
+            else:
+                # Regular optimization phase
+                optimizer.zero_grad()
+                
+                # Get current conformer coordinates
+                ligand_coords = drug_conf()
+                current_ligand_coords = ligand_coords  # Store current conformations
+                
+                # Compute scores with updated scoring function
+                scores = scoring_fn.compute_score(
+                    ligand_coords,
+                    protein_coords,
+                    drug_conf.ligand_vdw,
+                    prot_vdw,
+                    prot_is_hydrophobic,
+                    prot_is_hbond_donor,
+                    prot_is_hbond_acceptor,
+                    len(drug_conf.rotatable_bonds)
+                )
+                current_scores = scores  # Store current scores
+                
+                # Update global best scores/coordinates
+                global_improved = scores < global_best_scores
+                if global_improved.any():
+                    if global_best_coords is None:
+                        global_best_coords = ligand_coords.clone()
+                    else:
+                        global_best_coords[global_improved] = ligand_coords[global_improved].clone()
+                    global_best_scores[global_improved] = scores[global_improved]
+                    current_state['global_best_coords'] = global_best_coords
+                    
+                # Check round improvements
+                round_improved = scores < round_best_scores
+                improvement_ratio = round_improved.float().mean()  # Calculate percentage of improved conformers
+                significant_round_improvement = improvement_ratio > 0.05  # More than 5% improved
+                
+                if significant_round_improvement:
+                    current_state['last_improvement_step'] = current_state['step_count']
+                    round_best_scores[round_improved] = scores[round_improved]
+                
+                # Check for stagnation
+                steps_since_improvement = current_state['step_count'] - current_state['last_improvement_step']
+                if steps_since_improvement > current_state['stagnation_tolerance']:
+                    logger.info("Score stagnant - reinitializing coordinates")
+                    # Reinitialize coordinates
+                    drug_conf.conf_params.data = drug_conf._initialize_near_surface(0.0)
+                    # Reset round-based scores but keep global scores
+                    current_state['round_best_scores'] = float('inf') * torch.ones(drug_conf.n_conformers, device=drug_conf.device)
+                    round_best_scores = current_state['round_best_scores']
+                    # Reset last improvement step
+                    current_state['last_improvement_step'] = current_state['step_count']
+                
+                # Compute loss (negative because we want to minimize energy)
+                loss = scores.mean()
+                loss.backward()
+                
+                optimizer.step()
+                
+                # Update step count
+                current_state['step_count'] += 1
         
         # Check if optimization is complete
         is_complete = current_state['step_count'] >= current_state['total_steps']
         
-        # Generate conformer PDbs for visualization using global best
-        sorted_indices = torch.argsort(global_best_scores)
-        best_coords_sorted = global_best_coords[sorted_indices]
-        best_scores_sorted = global_best_scores[sorted_indices]
+        # ===== VISUALIZATION CONFIGURATION =====
+        # Option to view current conformations vs best conformations
+        VIEW_CURRENT_CONFORMATIONS = False  # New flag to control which conformations to view
+        VIEW_ALL_CONFORMERS = False
         
-        # MODIFIED: Get only the single best conformer if stopped/complete
-        if is_stopped or is_complete:
-            # If stopped, only return the single best conformer
-            n_top = 1
+        # Determine which conformations to show
+        if VIEW_CURRENT_CONFORMATIONS and current_ligand_coords is not None:
+            # Sort and display the CURRENT conformations
+            sorted_indices = torch.argsort(current_scores)
+            conformer_coords = current_ligand_coords[sorted_indices]
+            conformer_scores = current_scores[sorted_indices]
+            # logger.info("Showing current iteration conformations")
         else:
-            # During active optimization, show multiple conformers
-            n_top = min(10, len(best_coords_sorted))
+            # Sort and display the BEST conformations (original behavior)
+            sorted_indices = torch.argsort(global_best_scores)
+            conformer_coords = global_best_coords[sorted_indices] if global_best_coords is not None else None
+            conformer_scores = global_best_scores[sorted_indices]
+            # logger.info("Showing best conformations across all iterations")
+        
+        # Determine how many conformers to display
+        if is_stopped or is_complete:
+            if not VIEW_ALL_CONFORMERS:
+                # If stopped, only return the single best conformer
+                n_top = 1
+            else:
+                # Return all conformers when stopped
+                n_top = len(conformer_coords) if conformer_coords is not None else 0
+        else:
+            if not VIEW_ALL_CONFORMERS:
+                # During active optimization, show multiple top conformers
+                n_top = min(10, len(conformer_coords) if conformer_coords is not None else 0)
+            else:
+                # Show all conformers during optimization
+                n_top = len(conformer_coords) if conformer_coords is not None else 0
         
         conformer_pdbs = []
-        mol = current_state['ligand_mol']
-        best_coords_np = best_coords_sorted[:n_top].detach().cpu().numpy()
-        
-        for conf_coords in best_coords_np:
-            mol_copy = Chem.Mol(mol)
-            conf = Chem.Conformer(mol_copy.GetNumAtoms())
+        if conformer_coords is not None:
+            mol = current_state['ligand_mol']
+            coords_np = conformer_coords[:n_top].detach().cpu().numpy()
             
-            for atom_idx in range(mol_copy.GetNumAtoms()):
-                x, y, z = conf_coords[atom_idx]
-                conf.SetAtomPosition(atom_idx, Chem.rdGeometry.Point3D(float(x), float(y), float(z)))
-            
-            mol_copy.RemoveAllConformers()
-            mol_copy.AddConformer(conf)
-            
-            conformer_pdb = Chem.MolToPDBBlock(mol_copy)
-            conformer_pdbs.append(conformer_pdb)
+            for conf_coords in coords_np:
+                mol_copy = Chem.Mol(mol)
+                conf = Chem.Conformer(mol_copy.GetNumAtoms())
+                
+                for atom_idx in range(mol_copy.GetNumAtoms()):
+                    x, y, z = conf_coords[atom_idx]
+                    conf.SetAtomPosition(atom_idx, Chem.rdGeometry.Point3D(float(x), float(y), float(z)))
+                
+                mol_copy.RemoveAllConformers()
+                mol_copy.AddConformer(conf)
+                
+                conformer_pdb = Chem.MolToPDBBlock(mol_copy)
+                conformer_pdbs.append(conformer_pdb)
         
         # Clean up if complete
         if is_complete:
             current_state.update({
+                # Docking components
                 'drug_conf': None,
                 'scoring_fn': None,
                 'optimizer': None,
@@ -988,22 +1234,33 @@ def optimize_docking():
                 'prot_is_hydrophobic': None,
                 'prot_is_hbond_donor': None,
                 'prot_is_hbond_acceptor': None,
+                
+                # Optimization state
+                'step_count': 0,
+                'last_improvement_step': 0,
                 'global_best_scores': None,
                 'global_best_coords': None,
                 'round_best_scores': None,
-                'step_count': 0,
-                'last_improvement_step': 0
+                'is_sampling_phase': True,
+                'sampling_step_count': 0,
+                'sampling_no_improve_count': 0
             })
         
         return jsonify({
             'message': 'Optimization step completed',
             'protein_pdb': current_state['pdb_data'],
             'conformer_pdbs': conformer_pdbs,
-            'scores': best_scores_sorted[:n_top].detach().cpu().numpy().tolist(),
+            'scores': conformer_scores[:n_top].detach().cpu().numpy().tolist() if n_top > 0 else [],
             'is_complete': is_complete,
             'is_stopped': is_stopped,
             'current_step': current_state['step_count'],
-            'total_steps': current_state['total_steps']
+            'total_steps': current_state['total_steps'],
+            'is_sampling_phase': is_sampling_phase,
+            'sampling_step_count': current_state['sampling_step_count'] if is_sampling_phase else None,
+            'view_current_conformations': VIEW_CURRENT_CONFORMATIONS,
+            'view_all_conformers': VIEW_ALL_CONFORMERS,
+            'num_conformers_displayed': n_top,
+            'total_conformers_available': len(conformer_coords) if conformer_coords is not None else 0
         })
         
     except Exception as e:
