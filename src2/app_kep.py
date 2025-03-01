@@ -1315,7 +1315,7 @@ def optimize_docking():
         # ===== VISUALIZATION CONFIGURATION =====
         # Option to view current conformations vs best conformations
         VIEW_CURRENT_CONFORMATIONS = True  # Set to True to view current conformations instead of best
-        VIEW_ALL_CONFORMERS = True        # Set to True to view all conformers instead of just top ones
+        VIEW_ALL_CONFORMERS = False        # Set to True to view all conformers instead of just top ones
         
         # First determine which set of conformations to use (current vs global best)
         if VIEW_CURRENT_CONFORMATIONS and current_ligand_coords is not None:
