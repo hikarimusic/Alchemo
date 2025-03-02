@@ -499,7 +499,7 @@ class VinaScoringFunction:
         return prot_is_hydrophobic, prot_is_hbond_donor, prot_is_hbond_acceptor
 
 class DrugConformation(nn.Module):
-    def __init__(self, mol, protein_coords, n_conformers=100, sample_mode="grid", surface_distance=0.0, grid_spacing=2.0):
+    def __init__(self, mol, protein_coords, n_conformers=100, sample_mode="volume", surface_distance=0.0, grid_spacing=2.0):
         super().__init__()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         # self.device = 'cpu'
@@ -533,12 +533,14 @@ class DrugConformation(nn.Module):
         elif sample_mode == "volume":
             initial_params = self._initialize_throughout_volume(protein_radius)
         elif sample_mode == "grid":
-            initial_params = self._initialize_grid_sampling(grid_spacing)
+            # Modified to use a single batch for grid sampling
+            initial_params = self._initialize_grid_sampling_single_batch(grid_spacing)
         else:
             raise ValueError(f"Unknown sample mode: {sample_mode}")
         
         # Parameters: [n_conformers, n_params]
         self.conf_params = nn.Parameter(initial_params)
+        self.n_active_conformers = self.n_conformers
         
         self.to(self.device)
         
@@ -557,7 +559,7 @@ class DrugConformation(nn.Module):
         n_params = self.conf_params.shape[1]
         
         # Create perturbation: position (±2Å), orientation (±π), torsion angles (±π)
-        position_perturbation = torch.randn(indices_to_perturb.size(0), 3, device=self.device) * 0.0
+        position_perturbation = torch.randn(indices_to_perturb.size(0), 3, device=self.device) * 2.0
         orientation_perturbation = (torch.rand(indices_to_perturb.size(0), 3, device=self.device) * torch.pi) * (torch.randint(0, 2, (indices_to_perturb.size(0), 3), device=self.device) * 2 - 1)
         
         n_rotatable = n_params - 6
@@ -646,9 +648,9 @@ class DrugConformation(nn.Module):
         
         return params.to(torch.float32)
 
-    def _initialize_grid_sampling(self, grid_spacing=2.0):
+    def _initialize_grid_sampling_single_batch(self, grid_spacing=2.0):
         """
-        Initialize conformers on a grid throughout the protein volume.
+        Initialize conformers on a grid throughout the protein volume in a single batch.
         
         Parameters:
         -----------
@@ -670,7 +672,7 @@ class DrugConformation(nn.Module):
         logger.info(f"Creating grid with dimensions {nx}x{ny}x{nz} (total: {nx*ny*nz} points)")
         
         # Generate grid points
-        self.all_grid_points = []
+        grid_points = []
         for i in range(nx):
             x = min_coords[0] + (i + 0.5) * (box_size[0] / nx)
             for j in range(ny):
@@ -685,65 +687,39 @@ class DrugConformation(nn.Module):
                     
                     # Only include points within a certain distance of the protein
                     if min_dist < 2 * grid_spacing:
-                        self.all_grid_points.append([x.item(), y.item(), z.item()])
+                        grid_points.append([x.item(), y.item(), z.item()])
         
         # If no grid points are near the protein, fall back to random points
-        if len(self.all_grid_points) == 0:
+        if len(grid_points) == 0:
             logger.warning("No grid points near protein, falling back to random initialization")
             return self._initialize_throughout_volume(self.protein_radius)
         
-        # Check if we need to adjust n_conformers or pad the grid points
-        original_points = len(self.all_grid_points)
-        logger.info(f"Generated {original_points} grid points near protein")
+        logger.info(f"Generated {len(grid_points)} grid points near protein")
         
-        if original_points < self.n_conformers:
-            # If fewer grid points than conformers, adjust n_conformers to match grid points
-            logger.info(f"Reducing n_conformers from {self.n_conformers} to {original_points} to match available grid points")
-            self.n_conformers = original_points
-            self.n_active_conformers = original_points
-            # No padding needed
-            points_needed = 0
-        else:
-            # Make sure the total number of grid points is a multiple of n_conformers
-            points_needed = (self.n_conformers - (original_points % self.n_conformers)) % self.n_conformers
-        
-        if points_needed > 0:
-            logger.info(f"Adding {points_needed} additional grid points to make total a multiple of {self.n_conformers}")
-            # Add duplicates of first grid point with slight offsets
-            for i in range(points_needed):
-                base_point = self.all_grid_points[0]
-                # Add small random offset (10% of grid spacing)
-                offset = [(torch.rand(1).item() - 0.5) * 0.1 * grid_spacing for _ in range(3)]
-                new_point = [base_point[0] + offset[0], 
-                            base_point[1] + offset[1], 
-                            base_point[2] + offset[2]]
-                self.all_grid_points.append(new_point)
-        
-        self.total_points = len(self.all_grid_points)
-        self.total_batches = self.total_points // self.n_conformers
-        logger.info(f"Final grid has {self.total_points} points in {self.total_batches} batches of {self.n_conformers}")
-        
-        # Only use the first batch initially
-        self.current_batch = 0
-        start_idx = 0
-        end_idx = min(self.n_conformers, self.total_points)
-        grid_points = self.all_grid_points[start_idx:end_idx]
-        self.n_active_conformers = len(grid_points)
+        # If we have more grid points than conformers, sample a subset
+        if len(grid_points) > self.n_conformers:
+            indices = np.random.choice(len(grid_points), self.n_conformers, replace=False)
+            grid_points = [grid_points[i] for i in indices]
+            logger.info(f"Sampled {self.n_conformers} points from {len(grid_points)} grid points")
+        # If we have fewer grid points than conformers, adjust n_conformers
+        elif len(grid_points) < self.n_conformers:
+            logger.info(f"Reducing n_conformers from {self.n_conformers} to {len(grid_points)} to match available grid points")
+            self.n_conformers = len(grid_points)
         
         # Convert grid points to tensor
         positions = torch.tensor(grid_points, device=self.device, dtype=torch.float32)
         
         # Random orientations (euler angles)
-        orientations = torch.rand(self.n_active_conformers, 3, device=self.device) * 2 * np.pi
+        orientations = torch.rand(self.n_conformers, 3, device=self.device) * 2 * np.pi
         
         # Random rotatable bond angles
-        rot_angles = torch.rand(self.n_active_conformers, n_rotatable, device=self.device) * 2 * np.pi
+        rot_angles = torch.rand(self.n_conformers, n_rotatable, device=self.device) * 2 * np.pi
         
         # Store grid cell information for box constraints
         self.grid_cells = []
         self.grid_spacing = grid_spacing
         cell_factor = 1.2  # Make cells just 1.2x the grid spacing for local exploration
-        for i in range(self.n_active_conformers):
+        for i in range(self.n_conformers):
             half_size = grid_spacing * cell_factor / 2.0
             center = torch.tensor(grid_points[i], device=self.device)
             cell_min = center - half_size
@@ -753,59 +729,8 @@ class DrugConformation(nn.Module):
         # Combine all parameters
         params = torch.cat([positions, orientations, rot_angles], dim=1)
         
-        logger.info(f"Initialized {self.n_active_conformers} conformers on grid")
+        logger.info(f"Initialized {self.n_conformers} conformers on grid")
         return params.to(torch.float32)
-
-
-    def switch_to_next_batch(self):
-        """
-        Switch to the next batch of grid points.
-        Returns True if switched to a new batch, False if no more batches.
-        """
-        # Move to next batch
-        self.current_batch = (self.current_batch + 1) % self.total_batches
-        
-        # Calculate indices for this batch
-        start_idx = self.current_batch * self.n_conformers
-        end_idx = min(start_idx + self.n_conformers, self.total_points)
-        
-        # If we've processed all batches, return False
-        if start_idx >= self.total_points:
-            return False
-        
-        logger.info(f"Switching to batch {self.current_batch + 1}/{self.total_batches} with indices {start_idx}:{end_idx}")
-        
-        # Get grid points for this batch
-        grid_points = self.all_grid_points[start_idx:end_idx]
-        self.n_active_conformers = len(grid_points)
-        
-        # Get number of rotatable bonds
-        n_rotatable = len(self.rotatable_bonds)
-        
-        # Create new parameter tensor
-        positions = torch.tensor(grid_points, device=self.device, dtype=torch.float32)
-        orientations = torch.rand(self.n_active_conformers, 3, device=self.device) * 2 * np.pi
-        rot_angles = torch.rand(self.n_active_conformers, n_rotatable, device=self.device) * 2 * np.pi
-        
-        # Create new parameters tensor
-        new_params = torch.cat([positions, orientations, rot_angles], dim=1)
-        
-        # Update conf_params - need to create a new Parameter since size changed
-        old_params = self.conf_params
-        self.conf_params = nn.Parameter(new_params)
-        
-        # Update grid cells
-        self.grid_cells = []
-        cell_factor = 1.2
-        for i in range(self.n_active_conformers):
-            half_size = self.grid_spacing * cell_factor / 2.0
-            center = torch.tensor(grid_points[i], device=self.device)
-            cell_min = center - half_size
-            cell_max = center + half_size
-            self.grid_cells.append((cell_min, cell_max))
-        
-        logger.info(f"Successfully switched to next batch with {self.n_active_conformers} conformers")
-        return True
 
     def _find_rotatable_bonds_and_branches(self) -> Tuple[List[Tuple[int, int]], List[List[int]]]:
         """Find rotatable bonds and precalculate their branch atoms."""
@@ -1003,7 +928,7 @@ current_state = {
     
     # Optimization state
     'step_count': 0,
-    'total_steps': 1e10,
+    'total_steps': 400,
     'global_best_scores': None,  # Best scores across all iterations
     'global_best_coords': None,  # Best coordinates across all iterations
     
@@ -1137,30 +1062,24 @@ def initialize_docking():
             
             # Optimization state
             'step_count': 0,
-            'batch_step_count': 0,
-            'steps_per_batch': 10000,  # Process each batch for 50 steps before switching
-            'total_steps': 1e10,
-            'global_best_scores': None,
-            'global_best_coords': None,
-            'global_best_params': None,
-            
-            # Batch processing state
-            'current_batch': 0,
-            'all_batches_best_scores': {},  # Store best scores for each batch
-            'all_batches_best_coords': {},  # Store best coordinates for each batch
-            'all_batches_best_params': {},  # Store best parameters for each batch
+            'total_steps': 600,
+            'best_scores': None,
+            'best_coords': None,
+            'best_params': None,
             
             # ILS-specific variables
             'local_best_scores': None,
             'no_improvement_steps': None,
-            'pre_perturbation_params': None,
-            'pre_perturbation_scores': None,
             'max_no_improvement': 10,
             'improvement_threshold': 0.05,
-            'protein_radius': protein_radius.item()
+            'protein_radius': protein_radius.item(),
+            
+            # Configuration parameters
+            'top_n_conformations': 20,        # Number of top conformations to focus on (was 10)
+            'display_n_conformations': 20     # Number of conformations to display when not showing all (was 10)
         })
         
-        # Initialize drug conformation model with grid sampling
+        # Initialize drug conformation model with grid sampling (single batch)
         drug_conf = DrugConformation(
             mol=current_state['ligand_mol'],
             protein_coords=current_state['protein_coords'],
@@ -1169,9 +1088,9 @@ def initialize_docking():
             grid_spacing=grid_spacing
         ).to(device)
         
-        # Get the actual number of active conformers in the current batch
+        # Get the actual number of active conformers
         n_active_conformers = drug_conf.n_active_conformers
-        logger.info(f"Active conformers in current batch: {n_active_conformers}")
+        logger.info(f"Number of active conformers: {n_active_conformers}")
         
         # Initialize scoring function
         scoring_fn = VinaScoringFunction(device, current_state['ligand_mol'])
@@ -1214,14 +1133,12 @@ def initialize_docking():
         prot_is_hbond_acceptor = torch.tensor(is_hbond_acceptor, device=device, dtype=torch.bool)
 
         # Initialize best scores and coordinates trackers with the actual number of conformers
-        global_best_scores = float('inf') * torch.ones(n_active_conformers, device=device)
+        best_scores = float('inf') * torch.ones(n_active_conformers, device=device)
         
-        # Now initialize the ILS tracking variables with the actual number of conformers
+        # Initialize ILS tracking variables
         ils_tracking = {
             'local_best_scores': float('inf') * torch.ones(n_active_conformers, device=device),
-            'no_improvement_steps': torch.zeros(n_active_conformers, device=device, dtype=torch.int),
-            'pre_perturbation_params': None,
-            'pre_perturbation_scores': None
+            'no_improvement_steps': torch.zeros(n_active_conformers, device=device, dtype=torch.int)
         }
         
         # Store all necessary state
@@ -1237,22 +1154,15 @@ def initialize_docking():
             'prot_is_hbond_acceptor': prot_is_hbond_acceptor,
             
             # Optimization state
-            'global_best_scores': global_best_scores,
-            'global_best_coords': None,
+            'best_scores': best_scores,
+            'best_coords': None,
             
             # ILS tracking variables
-            **ils_tracking,
-            
-            # Add total batches info
-            'total_batches': drug_conf.total_batches,
-            'total_points': drug_conf.total_points
+            **ils_tracking
         })
         
         return jsonify({
             'message': 'Docking initialized successfully',
-            'total_grid_points': drug_conf.total_points,
-            'total_batches': drug_conf.total_batches,
-            'current_batch': drug_conf.current_batch,
             'active_conformers': drug_conf.n_active_conformers
         })
         
@@ -1260,7 +1170,6 @@ def initialize_docking():
         logger.error(f"Error in initialize_docking: {str(e)}")
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
-
 
 @app.route('/api/optimize_docking', methods=['POST'])
 def optimize_docking():
@@ -1281,242 +1190,268 @@ def optimize_docking():
         
         # Initialize or get ILS tracking variables
         no_improvement_steps = current_state['no_improvement_steps']
-        global_best_scores = current_state['global_best_scores']
-        global_best_coords = current_state['global_best_coords']
+        best_scores = current_state['best_scores']
+        best_coords = current_state['best_coords']
         local_best_scores = current_state['local_best_scores']
-        pre_perturbation_params = current_state['pre_perturbation_params']
-        pre_perturbation_scores = current_state['pre_perturbation_scores']
         improvement_threshold = current_state['improvement_threshold']
-        
-        # Get batch processing state
-        batch_step_count = current_state['batch_step_count']
-        steps_per_batch = current_state['steps_per_batch']
-        current_batch = current_state['current_batch']
-        all_batches_best_scores = current_state['all_batches_best_scores']
-        all_batches_best_coords = current_state['all_batches_best_coords']
-        all_batches_best_params = current_state['all_batches_best_params']
         
         # Variables to track current iteration conformations
         current_ligand_coords = None
         current_scores = None
         
-        # Check if it's time to switch to next batch
-        should_switch_batch = False
+        # Initialize these variables for the API response
+        needs_perturbation = None
+        significant_improvement = None
         
         # If not stopped, perform 10 optimization steps
         if not is_stopped:
-            needs_perturbation = None
-            significant_improvement = None
             
             # Run 10 optimization steps in a single API call
             for step_index in range(10):
-                # Check if we should switch to next batch
-                if batch_step_count >= steps_per_batch and drug_conf.total_batches > 1:
-                    logger.info(f"Completed {batch_step_count} steps for batch {current_batch + 1}, switching to next batch")
-                    
-                    # Store best results for current batch
-                    all_batches_best_scores[current_batch] = global_best_scores.clone().cpu()
-                    if global_best_coords is not None:
-                        all_batches_best_coords[current_batch] = global_best_coords.clone().cpu()
-                    
-                    # Switch to next batch
-                    success = drug_conf.switch_to_next_batch()
-                    if success:
-                        # Update current batch number
-                        current_batch = drug_conf.current_batch
-                        current_state['current_batch'] = current_batch
-                        
-                        # Create new optimizer for new parameters
-                        optimizer = torch.optim.SGD([drug_conf.conf_params],
-                                                lr=0.005,
-                                                momentum=0.9,
-                                                dampening=0,
-                                                weight_decay=0,
-                                                nesterov=True)
-                        current_state['optimizer'] = optimizer
-                        
-                        # Reset ILS tracking variables for new batch
-                        n_active_conformers = drug_conf.n_active_conformers
-                        no_improvement_steps = torch.zeros(n_active_conformers, device=drug_conf.device, dtype=torch.int)
-                        local_best_scores = float('inf') * torch.ones(n_active_conformers, device=drug_conf.device)
-                        global_best_scores = float('inf') * torch.ones(n_active_conformers, device=drug_conf.device)
-                        pre_perturbation_params = None
-                        pre_perturbation_scores = None
-                        global_best_coords = None
-                        
-                        # Update state
-                        current_state.update({
-                            'no_improvement_steps': no_improvement_steps,
-                            'local_best_scores': local_best_scores,
-                            'global_best_scores': global_best_scores,
-                            'global_best_coords': global_best_coords,
-                            'pre_perturbation_params': pre_perturbation_params,
-                            'pre_perturbation_scores': pre_perturbation_scores,
-                            'batch_step_count': 0
-                        })
-                        
-                        # If this batch has been processed before, restore best scores/coords
-                        if current_batch in all_batches_best_scores:
-                            best_scores_cpu = all_batches_best_scores[current_batch]
-                            global_best_scores = best_scores_cpu.to(drug_conf.device)
-                            current_state['global_best_scores'] = global_best_scores
-                            
-                            if current_batch in all_batches_best_coords:
-                                best_coords_cpu = all_batches_best_coords[current_batch]
-                                global_best_coords = best_coords_cpu.to(drug_conf.device)
-                                current_state['global_best_coords'] = global_best_coords
-                        
-                        should_switch_batch = True
-                        # Compute new batch coordinates and scores after switching
-                        ligand_coords = drug_conf()
-                        current_ligand_coords = ligand_coords
-                        
-                        scores = scoring_fn.compute_score(
-                            ligand_coords,
-                            protein_coords,
-                            drug_conf.ligand_vdw,
-                            prot_vdw,
-                            prot_is_hydrophobic,
-                            prot_is_hbond_donor,
-                            prot_is_hbond_acceptor,
-                            len(drug_conf.rotatable_bonds)
-                        )
-                        current_scores = scores
-                        
-                        # Break the loop to avoid optimization on this step
-                        break
-                    else:
-                        logger.info("No more batches to process, continuing with current batch")
+                optimizer.zero_grad()
                 
-                # Skip optimization step if we just switched batches
-                if not should_switch_batch:
-                    optimizer.zero_grad()
+                # Get current conformer coordinates
+                ligand_coords = drug_conf()
+                current_ligand_coords = ligand_coords  # Store current conformations
+                
+                # Compute scores
+                scores = scoring_fn.compute_score(
+                    ligand_coords,
+                    protein_coords,
+                    drug_conf.ligand_vdw,
+                    prot_vdw,
+                    prot_is_hydrophobic,
+                    prot_is_hbond_donor,
+                    prot_is_hbond_acceptor,
+                    len(drug_conf.rotatable_bonds)
+                )
+                current_scores = scores  # Store current scores
+                
+                # Compute loss (negative because we want to minimize energy)
+                loss = scores.mean()
+                loss.backward()
+                
+                optimizer.step()
+                
+                # Apply box constraints to keep each conformation within its grid cell
+                if hasattr(drug_conf, 'grid_cells'):
+                    # Get current positions after optimization step
+                    current_positions = drug_conf.conf_params.data[:, :3]
                     
-                    # Get current conformer coordinates
-                    ligand_coords = drug_conf()
-                    current_ligand_coords = ligand_coords  # Store current conformations
-                    
-                    # Compute scores
-                    scores = scoring_fn.compute_score(
-                        ligand_coords,
-                        protein_coords,
-                        drug_conf.ligand_vdw,
-                        prot_vdw,
-                        prot_is_hydrophobic,
-                        prot_is_hbond_donor,
-                        prot_is_hbond_acceptor,
-                        len(drug_conf.rotatable_bonds)
-                    )
-                    current_scores = scores  # Store current scores
-                    
-                    # Compute loss (negative because we want to minimize energy)
-                    loss = scores.mean()
-                    loss.backward()
-                    
-                    optimizer.step()
-                    
-                    # Apply box constraints to keep each conformation within its grid cell
-                    if hasattr(drug_conf, 'grid_cells'):
-                        # Get current positions after optimization step
-                        current_positions = drug_conf.conf_params.data[:, :3]
+                    # Apply constraints for each conformation
+                    for i in range(drug_conf.n_active_conformers):
+                        # Get grid cell boundaries for this conformer
+                        cell_min, cell_max = drug_conf.grid_cells[i]
                         
-                        # Apply constraints for each conformation
-                        for i in range(drug_conf.n_active_conformers):
-                            # Get grid cell boundaries for this conformer
-                            cell_min, cell_max = drug_conf.grid_cells[i]
-                            
-                            # Check if position is outside cell
-                            position = current_positions[i]
-                            outside_cell = (position < cell_min) | (position > cell_max)
-                            
-                            if outside_cell.any():
-                                # Project back into cell
-                                position = torch.max(position, cell_min)
-                                position = torch.min(position, cell_max)
-                                drug_conf.conf_params.data[i, :3] = position
-                    
-                    # Initialize pre_perturbation variables if they're None
-                    if pre_perturbation_params is None:
-                        pre_perturbation_params = drug_conf.conf_params.clone()
-                        current_state['pre_perturbation_params'] = pre_perturbation_params
-                    
-                    if pre_perturbation_scores is None:
-                        pre_perturbation_scores = scores.clone()
-                        current_state['pre_perturbation_scores'] = pre_perturbation_scores
-                    
-                    # Update global best scores/coordinates
-                    global_improved = scores < global_best_scores
-                    if global_improved.any():
-                        if global_best_coords is None:
-                            global_best_coords = ligand_coords.clone()
-                        else:
-                            global_best_coords[global_improved] = ligand_coords[global_improved].clone()
-                        global_best_scores[global_improved] = scores[global_improved]
-                        current_state['global_best_coords'] = global_best_coords
+                        # Check if position is outside cell
+                        position = current_positions[i]
+                        outside_cell = (position < cell_min) | (position > cell_max)
                         
-                        # Update pre_perturbation_params to match global best
-                        pre_perturbation_params[global_improved] = drug_conf.conf_params[global_improved].clone()
-                        pre_perturbation_scores[global_improved] = global_best_scores[global_improved].clone()
-                    
-                    # Check for significant improvement against local best scores
-                    improvement_percentage = (scores - local_best_scores) 
-                    
-                    # Significant improvement if current score is better than local best by at least the threshold
-                    significant_improvement = improvement_percentage < -improvement_threshold
-                    
-                    # Update local best scores
-                    local_improved = scores < local_best_scores
-                    if local_improved.any():
-                        local_best_scores[local_improved] = scores[local_improved]
-                    
-                    # Update counters for each conformation individually
-                    # Reset counters for significantly improved conformations
-                    no_improvement_steps[significant_improvement] = 0
-                    
-                    # Increment counters for non-improving conformations
-                    no_improvement_steps[~significant_improvement] += 1
-                    
-                    # ILS Step 1: Check if any conformations need perturbation (reached max_no_improvement)
-                    needs_perturbation = no_improvement_steps >= current_state['max_no_improvement']
+                        if outside_cell.any():
+                            # Project back into cell
+                            position = torch.max(position, cell_min)
+                            position = torch.min(position, cell_max)
+                            drug_conf.conf_params.data[i, :3] = position
+                
+                # Update best scores/coordinates
+                improved = scores < best_scores
+                if improved.any():
+                    if best_coords is None:
+                        best_coords = ligand_coords.clone()
+                    else:
+                        best_coords[improved] = ligand_coords[improved].clone()
+                    best_scores[improved] = scores[improved]
+                    current_state['best_coords'] = best_coords
+                
+                # Check for significant improvement against local best scores
+                improvement_percentage = (scores - local_best_scores) 
+                
+                # Significant improvement if current score is better than local best by at least the threshold
+                significant_improvement = improvement_percentage < -improvement_threshold
+                
+                # Update local best scores
+                local_improved = scores < local_best_scores
+                if local_improved.any():
+                    local_best_scores[local_improved] = scores[local_improved]
+                
+                # Update counters for each conformation individually
+                # Reset counters for significantly improved conformations
+                no_improvement_steps[significant_improvement] = 0
+                
+                # Increment counters for non-improving conformations
+                no_improvement_steps[~significant_improvement] += 1
+                
+                # ILS Step 1: Check if any conformations need perturbation (reached max_no_improvement)
+                needs_perturbation = no_improvement_steps >= current_state['max_no_improvement']
 
-                    if needs_perturbation.any():
-                        logger.info(f"Perturbing {needs_perturbation.sum().item()} conformations")
-                        perturb_indices = torch.where(needs_perturbation)[0]
-                        
-                        # Create masks for different conditions using tensor operations
-                        improved_after_perturbation = scores[perturb_indices] < pre_perturbation_scores[perturb_indices]
-                        global_improvement = scores[perturb_indices] < global_best_scores[perturb_indices]
-                        
-                        # Update global best for indices that improved globally - all in parallel
-                        if global_improvement.any():
-                            improved_indices = perturb_indices[global_improvement]
-                            global_best_scores[improved_indices] = scores[improved_indices]
-                            if global_best_coords is not None:
-                                global_best_coords[improved_indices] = ligand_coords[improved_indices].clone()
-                            pre_perturbation_params[improved_indices] = drug_conf.conf_params[improved_indices].clone()
-                            pre_perturbation_scores[improved_indices] = scores[improved_indices].clone()
-                        
-                        # Apply perturbations to all conformations that need it
-                        drug_conf.perturb_selected_conformations(perturb_indices)
-                        
-                        # Reset no_improvement_steps and local_best_scores for perturbed conformations
-                        no_improvement_steps[perturb_indices] = 0
-                        local_best_scores[perturb_indices] = float('inf')
+                if needs_perturbation.any():
+                    logger.info(f"Perturbing {needs_perturbation.sum().item()} conformations")
+                    perturb_indices = torch.where(needs_perturbation)[0]
                     
-                    # Update batch step count
-                    current_state['batch_step_count'] += 1
+                    # Calculate global improvement directly
+                    global_improvement = scores[perturb_indices] < best_scores[perturb_indices]
+                    
+                    # Update global best for indices that improved globally - all in parallel
+                    if global_improvement.any():
+                        improved_indices = perturb_indices[global_improvement]
+                        best_scores[improved_indices] = scores[improved_indices]
+                        if best_coords is not None:
+                            best_coords[improved_indices] = ligand_coords[improved_indices].clone()
+                    
+                    # Apply perturbations to all conformations that need it
+                    drug_conf.perturb_selected_conformations(perturb_indices)
+                    
+                    # Reset no_improvement_steps and local_best_scores for perturbed conformations
+                    no_improvement_steps[perturb_indices] = 0
+                    local_best_scores[perturb_indices] = float('inf')
                 
                 # Update total step count
                 current_state['step_count'] += 1
                 
+                # Log current step information
+                if current_state['step_count'] % 10 == 0:
+                    logger.info(f"Step {current_state['step_count']}/{current_state['total_steps']} completed")
+                    if best_scores is not None:
+                        best_score = best_scores.min().item()
+                        logger.info(f"Current best score: {best_score:.3f}")
+                
+                # Check if we've reached step 200 to refocus optimization on top conformations
+                if current_state['step_count'] == 300:
+                    top_n = current_state['top_n_conformations']
+                    logger.info(f"Step 200: Refocusing optimization on top {top_n} conformations")
+                    
+                    # Find top conformations
+                    top_indices = torch.argsort(best_scores)[:top_n]
+                    top_params = drug_conf.conf_params[top_indices].clone()
+                    
+                    # Save the best scores and coordinates of these top conformations
+                    top_best_scores = best_scores[top_indices].clone()
+                    if best_coords is not None:
+                        top_best_coords = best_coords[top_indices].clone()
+                    else:
+                        # If best_coords doesn't exist yet, we'll need current coordinates
+                        ligand_coords = drug_conf()
+                        top_best_coords = ligand_coords[top_indices].clone()
+                    
+                    # Calculate device
+                    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+                    
+                    # Number of conformers per top solution
+                    n_conformers_per_top = drug_conf.n_active_conformers // top_n
+                    
+                    # Create new DrugConformation with default initialization
+                    new_drug_conf = DrugConformation(
+                        mol=current_state['ligand_mol'],
+                        protein_coords=current_state['protein_coords'],
+                        n_conformers=n_conformers_per_top * top_n,
+                        sample_mode="volume"  # Not using grid sampling anymore
+                    ).to(device)
+                    
+                    # Create new parameters based on top conformations
+                    new_params = []
+                    for i in range(top_n):
+                        # Base parameters for this top conformation
+                        base_params = top_params[i]
+                        
+                        # Create variations for position (±2Å), orientation (±π), torsion angles (±π)
+                        position_perturbations = torch.randn(n_conformers_per_top, 3, device=device) * 2.0
+                        orientation_perturbations = torch.randn(n_conformers_per_top, 3, device=device) * torch.pi
+                        
+                        n_rotatable = base_params.shape[0] - 6
+                        if n_rotatable > 0:
+                            torsion_perturbations = torch.randn(n_conformers_per_top, n_rotatable, device=device) * torch.pi
+                            all_perturbations = torch.cat([position_perturbations, orientation_perturbations, torsion_perturbations], dim=1)
+                        else:
+                            all_perturbations = torch.cat([position_perturbations, orientation_perturbations], dim=1)
+                        
+                        # Create variations around this top conformation
+                        variations = base_params.unsqueeze(0).repeat(n_conformers_per_top, 1) + all_perturbations
+                        new_params.append(variations)
+                    
+                    # Combine all parameters
+                    new_params = torch.cat(new_params, dim=0)
+                    
+                    # Update parameters of new DrugConformation
+                    new_drug_conf.conf_params.data = new_params
+                    
+                    # Create custom grid cells for constraining optimization
+                    # Ensure each variation inherits the grid cell of its ancestor
+                    if hasattr(drug_conf, 'grid_cells'):
+                        new_drug_conf.grid_cells = []
+                        new_drug_conf.grid_spacing = drug_conf.grid_spacing  # Preserve grid spacing
+                        
+                        for i in range(top_n):
+                            # Get original grid cell for this top conformation
+                            if i < len(top_indices) and top_indices[i] < len(drug_conf.grid_cells):
+                                ancestor_cell = drug_conf.grid_cells[top_indices[i]]
+                                # Use the same grid cell for all variations of this conformation
+                                for _ in range(n_conformers_per_top):
+                                    new_drug_conf.grid_cells.append(ancestor_cell)
+                            else:
+                                # Fallback if grid cell not available
+                                base_pos = top_params[i, :3]
+                                cell_size = 2.0  # Default size if grid cell not available
+                                for _ in range(n_conformers_per_top):
+                                    cell_min = base_pos - cell_size/2
+                                    cell_max = base_pos + cell_size/2
+                                    new_drug_conf.grid_cells.append((cell_min, cell_max))
+                    
+                    # Create new scoring function and optimizer
+                    new_scoring_fn = VinaScoringFunction(device, current_state['ligand_mol'])
+                    new_optimizer = torch.optim.SGD([new_drug_conf.conf_params],
+                                            lr=0.05,  # Lower learning rate for fine-tuning
+                                            momentum=0.9,
+                                            dampening=0,
+                                            weight_decay=0,
+                                            nesterov=True)
+                    
+                    # Initialize new tracking variables - all starting with infinity (default)
+                    new_best_scores = torch.ones(new_drug_conf.n_active_conformers, device=device) * float('inf')
+                    new_best_coords = torch.zeros((new_drug_conf.n_active_conformers, current_state['ligand_mol'].GetNumAtoms(), 3), device=device)
+                    
+                    # MODIFIED: Only the first variation of each top conformation inherits the best score/coords
+                    for i in range(top_n):
+                        # Calculate the index for the first variation of this top conformation
+                        idx = i * n_conformers_per_top
+                        
+                        # Set the best score and coordinates ONLY for the first variation
+                        new_best_scores[idx] = top_best_scores[i]
+                        new_best_coords[idx] = top_best_coords[i]
+                        
+                        # Log the inheritance
+                        logger.info(f"Conformation {idx} inherits best score {top_best_scores[i].item():.3f} from top conformation {i}")
+                    
+                    # Initialize ILS tracking variables for new conformers
+                    new_local_best_scores = torch.ones(new_drug_conf.n_active_conformers, device=device) * float('inf')
+                    
+                    # MODIFIED: Same as above, only the first variation inherits the local best score
+                    for i in range(top_n):
+                        idx = i * n_conformers_per_top
+                        new_local_best_scores[idx] = top_best_scores[i]  # Set local best to the same as global best
+                    
+                    new_no_improvement_steps = torch.zeros(new_drug_conf.n_active_conformers, device=device, dtype=torch.int)
+                    
+                    # Update state with new objects while preserving history
+                    current_state.update({
+                        'drug_conf': new_drug_conf,
+                        'scoring_fn': new_scoring_fn,
+                        'optimizer': new_optimizer,
+                        'local_best_scores': new_local_best_scores,
+                        'no_improvement_steps': new_no_improvement_steps,
+                        'best_scores': new_best_scores,
+                        'best_coords': new_best_coords,
+                        # 'max_no_improvement': 10,
+                        # 'improvement_threshold': 0.01,
+                    })
+                    
+                    logger.info(f"Step 200: Refocused optimization on top {top_n} conformations with {n_conformers_per_top} variations each")
+                    
+                    # Break the loop to start with the new configuration on the next call
+                    break
+                
                 # Save the updated ILS state variables
                 current_state['no_improvement_steps'] = no_improvement_steps
                 current_state['local_best_scores'] = local_best_scores
-                current_state['pre_perturbation_params'] = pre_perturbation_params
-                current_state['pre_perturbation_scores'] = pre_perturbation_scores
-                
-                # Update batch_step_count for the condition at the beginning of the loop
-                batch_step_count = current_state['batch_step_count']
                 
                 # Check if we're at the maximum number of steps
                 if current_state['step_count'] >= current_state['total_steps']:
@@ -1526,9 +1461,9 @@ def optimize_docking():
         # Check if optimization is complete
         is_complete = current_state['step_count'] >= current_state['total_steps']
         
-        # If we just switched batches, we need current_scores and current_ligand_coords
-        if should_switch_batch and current_ligand_coords is None:
-            # Compute coordinates and scores for the new batch
+        # If we're responding to stop request with no processing done
+        if is_stopped and current_ligand_coords is None:
+            # Compute coordinates and scores for the current state
             ligand_coords = drug_conf()
             current_ligand_coords = ligand_coords
             
@@ -1551,63 +1486,27 @@ def optimize_docking():
         if VIEW_CURRENT_CONFORMATIONS and current_ligand_coords is not None:
             conformer_coords = current_ligand_coords
             conformer_scores = current_scores
-            # logger.info("Using current iteration conformations")
         else:
-            conformer_coords = global_best_coords
-            conformer_scores = global_best_scores
-            # logger.info("Using best conformations across all iterations")
+            conformer_coords = best_coords
+            conformer_scores = best_scores
             
         if (not VIEW_ALL_CONFORMERS or is_stopped) and conformer_coords is not None:
             sorted_indices = torch.argsort(conformer_scores)
             conformer_coords = conformer_coords[sorted_indices]
             conformer_scores = conformer_scores[sorted_indices]
-            # logger.info("Conformations sorted by score")
-        else:
-            # logger.info("Keeping original order of conformations (unsorted)")
-            pass
         
-        if is_stopped:
-            # Return best conformer across all batches
-            all_best_scores = []
-            all_best_coords = []
-            
-            # Get best scores from current batch
-            if global_best_coords is not None:
-                min_idx = torch.argmin(global_best_scores)
-                all_best_scores.append(global_best_scores[min_idx].item())
-                all_best_coords.append(global_best_coords[min_idx].clone())
-            
-            # Get best scores from all previously processed batches
-            for batch_idx in all_batches_best_scores:
-                batch_scores = all_batches_best_scores[batch_idx]
-                if batch_idx in all_batches_best_coords:
-                    batch_coords = all_batches_best_coords[batch_idx]
-                    min_idx = torch.argmin(batch_scores)
-                    all_best_scores.append(batch_scores[min_idx].item())
-                    all_best_coords.append(batch_coords[min_idx].clone())
-            
-            if all_best_scores:
-                # Find the best score across all batches
-                best_idx = np.argmin(all_best_scores)
-                best_score = all_best_scores[best_idx]
-                best_coords = all_best_coords[best_idx]
-                
-                # Use the single best conformer across all batches
-                conformer_coords = best_coords.unsqueeze(0).to(drug_conf.device)
-                conformer_scores = torch.tensor([best_score], device=drug_conf.device)
+        if is_stopped or is_complete:
+            # Return only the best conformation
+            if conformer_coords is not None:
+                min_idx = torch.argmin(conformer_scores)
+                conformer_coords = conformer_coords[min_idx].unsqueeze(0)
+                conformer_scores = conformer_scores[min_idx].unsqueeze(0)
                 n_top = 1
             else:
                 n_top = 0
-                
-            logger.info("Returning overall best conformation across all batches")
-        elif is_complete:
-            if not VIEW_ALL_CONFORMERS:
-                n_top = 1
-            else:
-                n_top = len(conformer_coords) if conformer_coords is not None else 0
         else:
             if not VIEW_ALL_CONFORMERS:
-                n_top = min(10, len(conformer_coords) if conformer_coords is not None else 0)
+                n_top = min(current_state['display_n_conformations'], len(conformer_coords) if conformer_coords is not None else 0)
             else:
                 n_top = len(conformer_coords) if conformer_coords is not None else 0
         
@@ -1642,38 +1541,40 @@ def optimize_docking():
                 'prot_is_hbond_donor': None,
                 'prot_is_hbond_acceptor': None,
                 'step_count': 0,
-                'batch_step_count': 0,
-                'global_best_scores': None,
-                'global_best_coords': None,
+                'best_scores': None,
+                'best_coords': None,
                 'local_best_scores': None,
-                'no_improvement_steps': None,
-                'pre_perturbation_params': None,
-                'pre_perturbation_scores': None,
-                'all_batches_best_scores': {},
-                'all_batches_best_coords': {}
+                'no_improvement_steps': None
             })
         
         # Get ILS statistics for reporting
         ils_stats = {
-            'perturbed_conformers': needs_perturbation.sum().item() if needs_perturbation is not None else 0,
+            'perturbed_conformers': 0,
             'max_no_improvement': current_state['max_no_improvement'],
             'improvement_threshold': current_state['improvement_threshold'],
-            'significantly_improved_conformers': significant_improvement.sum().item() if significant_improvement is not None else 0
+            'significantly_improved_conformers': 0
         }
         
-        # Batch processing stats
-        batch_stats = {
-            'current_batch': current_batch + 1,  # 1-indexed for display
-            'total_batches': drug_conf.total_batches,
-            'batch_step_count': current_state['batch_step_count'],
-            'steps_per_batch': steps_per_batch,
-            'total_grid_points': drug_conf.total_points,
-            'active_conformers': drug_conf.n_active_conformers,
-            'processed_batches': len(all_batches_best_scores)
-        }
+        # Only try to access tensor methods if the variables exist and are tensors
+        if needs_perturbation is not None and hasattr(needs_perturbation, 'sum'):
+            ils_stats['perturbed_conformers'] = needs_perturbation.sum().item()
+            
+        if significant_improvement is not None and hasattr(significant_improvement, 'sum'):
+            ils_stats['significantly_improved_conformers'] = significant_improvement.sum().item()
+        
+        # Log progress after API call
+        logger.info(f"API call completed - Current step: {current_state['step_count']}/{current_state['total_steps']}")
+        if best_scores is not None:
+            best_score = best_scores.min().item() if best_scores.numel() > 0 else float('inf')
+            logger.info(f"Best score so far: {best_score:.3f}")
+            
+            # Log top scores if we have any
+            if n_top > 0 and conformer_scores is not None:
+                top_scores = conformer_scores[:min(3, n_top)].detach().cpu().numpy()
+                logger.info(f"Top scores: {', '.join([f'{score:.3f}' for score in top_scores])}")
         
         return jsonify({
-            'message': 'Optimization steps completed',
+            'message': f"Optimization steps completed - Step {current_state['step_count']}/{current_state['total_steps']}",
             'steps_performed': 10,
             'protein_pdb': current_state['pdb_data'],
             'conformer_pdbs': conformer_pdbs,
@@ -1686,9 +1587,7 @@ def optimize_docking():
             'view_all_conformers': VIEW_ALL_CONFORMERS,
             'num_conformers_displayed': n_top,
             'total_conformers_available': len(conformer_coords) if conformer_coords is not None else 0,
-            'ils_stats': ils_stats,
-            'batch_stats': batch_stats,
-            'batch_switched': should_switch_batch
+            'ils_stats': ils_stats
         })
         
     except Exception as e:
