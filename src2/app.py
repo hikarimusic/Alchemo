@@ -733,7 +733,7 @@ class DrugConformation(nn.Module):
         return params.to(torch.float32)
 
     def _find_rotatable_bonds_and_branches(self) -> Tuple[List[Tuple[int, int]], List[List[int]]]:
-        """Find rotatable bonds and precalculate their branch atoms."""
+        """Find rotatable bonds and precalculate their branch atoms, defining the branch as the side with fewer atoms."""
         rotatable = []
         branches = []
         
@@ -755,34 +755,41 @@ class DrugConformation(nn.Module):
                     len([n for n in end_atom.GetNeighbors() if n.GetAtomicNum() != 1]) < 2):
                     continue
                 
-                # Find branch atoms
-                branch_atoms = self._get_branch_atoms(end_idx, begin_idx)
-                if branch_atoms:
+                # Find branch atoms for both sides of the bond
+                branch_atoms_begin = self._get_branch_atoms(begin_idx, end_idx)
+                branch_atoms_end = self._get_branch_atoms(end_idx, begin_idx)
+                
+                # Choose the side with fewer atoms as the branch
+                if len(branch_atoms_begin) <= len(branch_atoms_end):
+                    # Begin side has fewer atoms (or equal)
+                    rotatable.append((end_idx, begin_idx))  # Note: Order is flipped to make branch second
+                    branches.append(branch_atoms_begin)
+                else:
+                    # End side has fewer atoms
                     rotatable.append((begin_idx, end_idx))
-                    branches.append(branch_atoms)
+                    branches.append(branch_atoms_end)
         
         return rotatable, branches
 
-    def _get_branch_atoms(self, atom2: int, atom1: int) -> List[int]:
-        """Find all atoms on the atom2 side of the rotatable bond."""
-        visited = set()
+    def _get_branch_atoms(self, atom_idx: int, exclude_idx: int) -> List[int]:
+        """Find all atoms on the atom_idx side of the bond, excluding the exclude_idx atom."""
+        visited = set([exclude_idx])  # Start with exclude_idx already visited
         branch_atoms = set()
         
-        def dfs(atom_idx: int) -> None:
-            if atom_idx in visited:
+        def dfs(current_idx: int) -> None:
+            if current_idx in visited:
                 return
                 
-            visited.add(atom_idx)
-            if atom_idx != atom1:
-                branch_atoms.add(atom_idx)
+            visited.add(current_idx)
+            branch_atoms.add(current_idx)
                 
-            atom = self.mol.GetAtomWithIdx(atom_idx)
+            atom = self.mol.GetAtomWithIdx(current_idx)
             for neighbor in atom.GetNeighbors():
                 neighbor_idx = neighbor.GetIdx()
-                if neighbor_idx != atom1 and neighbor_idx not in visited:
+                if neighbor_idx not in visited:
                     dfs(neighbor_idx)
         
-        dfs(atom2)
+        dfs(atom_idx)
         return sorted(list(branch_atoms))
 
     def _euler_to_quaternion(self, angles: torch.Tensor) -> torch.Tensor:

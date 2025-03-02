@@ -1,0 +1,5 @@
+n_conformers = 4000
+VIEW_CURRENT_CONFORMATIONS = False
+VIEW_ALL_CONFORMERS = False
+for step_index in range(10):
+if current_state['step_count'] == 300:
